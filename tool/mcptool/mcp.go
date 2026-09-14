@@ -46,13 +46,8 @@ func Connect(ctx context.Context, transport mcp.Transport) (*mcp.ClientSession, 
 	return client.Connect(ctx, transport, nil)
 }
 
-// ListTools enumerates the remote server's tools and wraps each as a tool.Tool.
+// ListTools enumerates all pages of the remote server's tools and wraps each as a tool.Tool.
 func ListTools(ctx context.Context, session *mcp.ClientSession) ([]tool.Tool, error) {
-	toolsResult, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %w", err)
-	}
-
 	// Create agent.Tool instances for each MCP tool.
 	//
 	// Normalization (normalizeMCPName) can map distinct remote names onto the
@@ -62,9 +57,12 @@ func ListTools(ctx context.Context, session *mcp.ClientSession) ([]tool.Tool, er
 	// first tool. Detect it here and fail loudly so the caller gets a clear
 	// signal instead of missing/unreachable tools.
 	// Create tool.Tool instances for each MCP tool
-	result := make([]tool.Tool, 0, len(toolsResult.Tools))
-	seen := make(map[string]string, len(toolsResult.Tools))
-	for _, mcpTool := range toolsResult.Tools {
+	result := make([]tool.Tool, 0)
+	seen := make(map[string]string)
+	for mcpTool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tools: %w", err)
+		}
 		agentTool := newMCPToolWrapper(session, mcpTool)
 		if existing, ok := seen[agentTool.name]; ok {
 			return nil, fmt.Errorf("normalized MCP tool name collision: remote tools %q and %q both normalize to %q", existing, mcpTool.Name, agentTool.name)
