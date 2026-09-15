@@ -267,6 +267,10 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 		var updates []*agent.ResponseUpdate
 		var functionCallContents []*message.FunctionCallContent
 		for i := 0; ; i++ {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return
+			}
 			if i >= f.maximumIterationsPerRequest {
 				f.logger.Debug(ctx, "reached maximum iteration count; stopping function invocation loop", "maximumIterationsPerRequest", f.maximumIterationsPerRequest)
 				opts = prepareOptionsForLastIteration(opts)
@@ -1056,11 +1060,18 @@ func (f *autocall) processFunctionCalls(ctx context.Context, tools map[string]to
 			}()
 		}
 		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return nil, errCount, err
+		}
 		results = parallelResults
 	} else {
 		// Invoke each function serially.
 		for _, fc := range funcCalls {
 			result := f.processFunctionCall(ctx, tools, fc)
+			// Request cancellation must bypass the recoverable tool-error path.
+			if err := ctx.Err(); err != nil {
+				return nil, errCount, err
+			}
 			if !captureCurrentIterationErrors && result.status == functionInvocationStatusException {
 				return nil, errCount, result.err
 			}
@@ -1109,6 +1120,9 @@ func (f *autocall) updateConsecutiveErrorCountOrThrow(ctx context.Context, added
 }
 
 func (f *autocall) processFunctionCall(ctx context.Context, tools map[string]tool.SchemaTool, funcCall *message.FunctionCallContent) functionInvocationResult {
+	if err := ctx.Err(); err != nil {
+		return functionInvocationResult{status: functionInvocationStatusException, call: funcCall, err: err}
+	}
 	declaration, ok := tools[funcCall.Name]
 	if !ok {
 		f.logger.Warn(ctx, "function not found", "funcName", funcCall.Name)
