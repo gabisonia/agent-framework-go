@@ -170,6 +170,10 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 			yield(nil, fmt.Errorf("toolautocall: MaximumIterationsPerRequest must be 0 or greater, got %d", f.maximumIterationsPerRequest))
 			return
 		}
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
 		if f.maximumIterationsPerRequest == 0 {
 			for update, err := range next(ctx, messages, opts...) {
 				if !yield(update, err) || err != nil {

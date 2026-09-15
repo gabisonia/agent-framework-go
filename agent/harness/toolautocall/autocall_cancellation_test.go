@@ -23,11 +23,15 @@ func TestFunctionInvoking_RequestCancellation(t *testing.T) {
 		cancelAt      string
 		deadline      bool
 		concurrent    bool
+		maxIterations *int
 		toolError     error
 		wantTools     int32
 		wantProviders int
 	}{
 		{name: "before request", cancelAt: "before request", wantProviders: 0},
+		{name: "before request with autocall disabled", cancelAt: "before request", maxIterations: new(0), wantProviders: 0},
+		{name: "expired request with autocall disabled", cancelAt: "before request", deadline: true, maxIterations: new(0), wantProviders: 0},
+		{name: "active request with autocall disabled", maxIterations: new(0), wantProviders: 1},
 		{name: "before tools", cancelAt: "before tools", wantProviders: 1},
 		{name: "before concurrent tools", cancelAt: "before tools", concurrent: true, wantProviders: 1},
 		{name: "during first tool", cancelAt: "first tool", toolError: context.Canceled, wantTools: 1, wantProviders: 1},
@@ -93,7 +97,10 @@ func TestFunctionInvoking_RequestCancellation(t *testing.T) {
 					}
 				}
 				var runErr error
-				for update, err := range toolautocall.New(toolautocall.Config{AllowConcurrentInvocations: tc.concurrent}).Run(
+				for update, err := range toolautocall.New(toolautocall.Config{
+					AllowConcurrentInvocations:  tc.concurrent,
+					MaximumIterationsPerRequest: tc.maxIterations,
+				}).Run(
 					provider, ctx, []*message.Message{message.NewText("Call both tools.")}, agent.WithTool(testTool)) {
 					if err != nil {
 						runErr = err
