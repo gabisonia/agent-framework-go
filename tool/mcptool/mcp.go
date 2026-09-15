@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -20,6 +21,9 @@ import (
 )
 
 // AddTool registers a tool.FuncTool on the given mcp.Server so it is exposed to MCP clients.
+// Native mcp.Content and []mcp.Content results are returned as MCP content blocks;
+// they must contain content types valid in a tool response. Nil content entries
+// are represented as the text "null". A *mcp.CallToolResult is returned as-is.
 func AddTool(src *mcp.Server, tl tool.FuncTool) {
 	src.AddTool(&mcp.Tool{
 		Name:         tl.Name(),
@@ -291,6 +295,14 @@ func agentResultToMCPCallToolResult(result any) *mcp.CallToolResult {
 		return &mcp.CallToolResult{}
 	case *mcp.CallToolResult:
 		return resultValue
+	case mcp.Content:
+		return &mcp.CallToolResult{Content: []mcp.Content{nativeMCPContentOrNull(resultValue)}}
+	case []mcp.Content:
+		contents := make([]mcp.Content, len(resultValue))
+		for i, content := range resultValue {
+			contents[i] = nativeMCPContentOrNull(content)
+		}
+		return &mcp.CallToolResult{Content: contents}
 	case string:
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: resultValue}}}
 	case json.RawMessage:
@@ -319,6 +331,15 @@ func agentResultToMCPCallToolResult(result any) *mcp.CallToolResult {
 	default:
 		return structuredResultToMCPCallToolResult(resultValue)
 	}
+}
+
+// Native MCP content should remain a protocol content block. Nil pointers need
+// a fallback because the SDK content marshalers dereference their receivers.
+func nativeMCPContentOrNull(content mcp.Content) mcp.Content {
+	if content == nil || (reflect.ValueOf(content).Kind() == reflect.Pointer && reflect.ValueOf(content).IsNil()) {
+		return &mcp.TextContent{Text: "null"}
+	}
+	return content
 }
 
 func functionResultToMCPCallToolResult(functionResult *message.FunctionResultContent) *mcp.CallToolResult {
