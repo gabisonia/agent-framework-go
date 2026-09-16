@@ -7,6 +7,7 @@ import (
 	"iter"
 	"slices"
 
+	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
 )
@@ -66,8 +67,8 @@ type FunctionInvocationFunc func(context.Context, *FunctionInvocationContext) (a
 //
 // Register it as a [Middleware] before the automatic tool-call middleware and
 // after components that supply tools. For tools from context providers, use
-// [ProviderConfig.Middlewares]. Only function tools in options are wrapped;
-// tools configured separately on the automatic tool-call middleware are not.
+// [ProviderConfig.Middlewares]. Function tools configured separately on the
+// automatic tool-call middleware are also wrapped, without adding them to provider requests.
 // Approval requirements and tool schemas are preserved. Callbacks run only when
 // the tool is invoked, including after approval, not when approval is requested.
 //
@@ -91,14 +92,19 @@ func (mf FunctionInvocationMiddleware) Run(next RunFunc, ctx context.Context, me
 		if !ok {
 			continue
 		}
-		wrapped := &functionInvocationTool{FuncTool: fn, middlewares: []FunctionInvocationMiddleware{mf}}
-		if previous, ok := fn.(*functionInvocationTool); ok {
-			wrapped.FuncTool = previous.FuncTool
-			wrapped.middlewares = append(slices.Clone(previous.middlewares), mf)
-		}
-		options[i] = WithTool(wrapped)
+		options[i] = WithTool(mf.wrap(fn))
 	}
+	options = append(options, toolmiddleware.Wrapper(mf.wrap))
 	return next(ctx, messages, options...)
+}
+
+func (mf FunctionInvocationMiddleware) wrap(fn tool.FuncTool) tool.FuncTool {
+	wrapped := &functionInvocationTool{FuncTool: fn, middlewares: []FunctionInvocationMiddleware{mf}}
+	if previous, ok := fn.(*functionInvocationTool); ok {
+		wrapped.FuncTool = previous.FuncTool
+		wrapped.middlewares = append(slices.Clone(previous.middlewares), mf)
+	}
+	return wrapped
 }
 
 type functionInvocationTool struct {

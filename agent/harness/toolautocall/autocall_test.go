@@ -46,6 +46,7 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 		concurrent bool
 		wrap       bool
 		additional bool
+		shadowed   bool
 		emptyID    bool
 		toolError  error
 	}{
@@ -54,11 +55,15 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 		{name: "concurrent wrappers", wrap: true, concurrent: true},
 		{name: "empty call ID", wrap: true, emptyID: true},
 		{name: "additional tool", additional: true},
+		{name: "additional tool wrappers", additional: true, wrap: true},
+		{name: "concurrent additional tool wrappers", additional: true, wrap: true, concurrent: true},
+		{name: "additional tool failure", additional: true, wrap: true, toolError: toolFailure},
+		{name: "request tool takes precedence", shadowed: true, wrap: true},
 		{name: "tool failure", wrap: true, toolError: toolFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			type auditKey struct{}
-			var handlerCalls, wrapperCalls atomic.Int32
+			var handlerCalls, wrapperCalls, innerCalls atomic.Int32
 			firstID := "call-1"
 			if tc.emptyID {
 				firstID = ""
@@ -92,9 +97,19 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 				}
 				return result, err
 			})
-			checkProviderContext := func(ctx context.Context, _ []*message.Message, _ ...agent.Option) {
+			inner := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+				innerCalls.Add(1)
+				if ctx.Value(auditKey{}) != invocation.CallID {
+					t.Error("callbacks did not execute in registration order")
+				}
+				return next(ctx, invocation)
+			})
+			checkProviderContext := func(ctx context.Context, _ []*message.Message, opts ...agent.Option) {
 				if invocation, ok := tool.InvocationFromContext(ctx); ok {
 					t.Errorf("invocation leaked to provider: %#v", invocation)
+				}
+				if tc.additional && len(slices.Collect(agent.AllOptions(opts, agent.WithTool))) != 0 {
+					t.Error("additional tools leaked into provider options")
 				}
 			}
 			runner := &agenttest.Runner{Responses: agenttest.NewResponseBuilder(checkProviderContext).
@@ -107,13 +122,21 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 				cfg.AdditionalTools = []tool.Tool{testTool}
 				options = nil
 			}
+			if tc.shadowed {
+				cfg.AdditionalTools = []tool.Tool{functool.MustNew(functool.Config{Name: "lookup"}, func(context.Context, struct{}) (string, error) {
+					t.Error("additional tool took precedence over the request tool")
+					return "", nil
+				})}
+			}
 			run := toolautocall.New(cfg).Run
 			next := func(ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
 				return run(runner.Run, ctx, messages, options...)
 			}
 			var updates iter.Seq2[*agent.ResponseUpdate, error]
 			if tc.wrap {
-				updates = observer.Run(next, t.Context(), []*message.Message{message.NewText("start")}, options...)
+				updates = observer.Run(func(ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+					return inner.Run(next, ctx, messages, opts...)
+				}, t.Context(), []*message.Message{message.NewText("start")}, options...)
 			} else {
 				updates = next(t.Context(), []*message.Message{message.NewText("start")}, options...)
 			}
@@ -136,8 +159,11 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 					t.Errorf("result = %#v, want call ID %q and error %v", results[i], id, tc.toolError)
 				}
 			}
-			if tc.wrap && wrapperCalls.Load() != 2 {
-				t.Errorf("wrapper calls = %d, want 2", wrapperCalls.Load())
+			if tc.wrap && (wrapperCalls.Load() != 2 || innerCalls.Load() != 2) {
+				t.Errorf("wrapper calls = %d, inner calls = %d; want 2 of each", wrapperCalls.Load(), innerCalls.Load())
+			}
+			if tc.additional && cfg.AdditionalTools[0] != testTool {
+				t.Error("middleware mutated configured additional tools")
 			}
 			if !tc.additional {
 				if original, _ := agent.GetOption(options, agent.WithTool); original != testTool {

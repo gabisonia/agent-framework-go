@@ -31,12 +31,16 @@ func TestFunctionInvoking_InvocationIdentityAfterApproval(t *testing.T) {
 		name         string
 		approved     bool
 		shortCircuit bool
+		additional   bool
 		wantTools    int
 		wantWrappers int
 	}{
 		{name: "approved", approved: true, wantTools: 1, wantWrappers: 1},
 		{name: "denied"},
 		{name: "approved short circuit", approved: true, shortCircuit: true, wantWrappers: 1},
+		{name: "additional tool approved", additional: true, approved: true, wantTools: 1, wantWrappers: 1},
+		{name: "additional tool denied", additional: true},
+		{name: "additional tool approved short circuit", additional: true, approved: true, shortCircuit: true, wantWrappers: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var observedIDs []string
@@ -61,9 +65,15 @@ func TestFunctionInvoking_InvocationIdentityAfterApproval(t *testing.T) {
 				AddFunctionCall("call-1", "lookup", `{}`).
 				NewTurn(func(context.Context, []*message.Message, ...agent.Option) { providerResumed = true }).
 				AddText("done").Build()}
+			cfg := toolautocall.Config{}
+			tools := []tool.Tool{testTool}
+			if tc.additional {
+				cfg.AdditionalTools = tools
+				tools = nil
+			}
 			a := agent.New(agent.ProviderConfig{
-				Run: runner.Run, Middlewares: []agent.Middleware{toolautocall.New(toolautocall.Config{})},
-			}, agent.Config{Tools: []tool.Tool{testTool}, Middlewares: []agent.Middleware{observer}})
+				Run: runner.Run, Middlewares: []agent.Middleware{toolautocall.New(cfg)},
+			}, agent.Config{Tools: tools, Middlewares: []agent.Middleware{observer}})
 			session := &agent.Session{}
 			var request *message.ToolApprovalRequestContent
 			for update, err := range a.RunText(t.Context(), "start", agent.WithSession(session)) {
