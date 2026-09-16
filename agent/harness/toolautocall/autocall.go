@@ -1065,6 +1065,18 @@ func (f *autocall) processFunctionCalls(ctx context.Context, tools map[string]to
 		}
 		wg.Wait()
 		if err := ctx.Err(); err != nil {
+			var toolErrors []error
+			for _, result := range parallelResults {
+				if result.err != nil {
+					toolErrors = append(toolErrors, result.err)
+				}
+			}
+			if len(toolErrors) == 1 {
+				return nil, errCount, toolErrors[0]
+			}
+			if len(toolErrors) > 1 {
+				return nil, errCount, errors.Join(toolErrors...)
+			}
 			return nil, errCount, err
 		}
 		results = parallelResults
@@ -1074,6 +1086,9 @@ func (f *autocall) processFunctionCalls(ctx context.Context, tools map[string]to
 			result := f.processFunctionCall(ctx, tools, fc)
 			// Request cancellation must bypass the recoverable tool-error path.
 			if err := ctx.Err(); err != nil {
+				if result.err != nil {
+					return nil, errCount, result.err
+				}
 				return nil, errCount, err
 			}
 			if !captureCurrentIterationErrors && result.status == functionInvocationStatusException {
