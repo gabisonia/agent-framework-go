@@ -4,6 +4,7 @@ package compaction
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -120,7 +121,11 @@ func DefaultToolCallFormatter(group *MessageGroup) string {
 			case *message.FunctionCallContent:
 				functionCalls = append(functionCalls, call{id: typed.CallID, name: typed.Name})
 			case *message.FunctionResultContent:
-				resultsByCallID[typed.CallID] = fmt.Sprint(typed.Result)
+				if raw, ok := typed.Result.(json.RawMessage); ok {
+					resultsByCallID[typed.CallID] = string(raw)
+				} else {
+					resultsByCallID[typed.CallID] = fmt.Sprint(typed.Result)
+				}
 				hasFunctionResult = true
 			}
 		}
