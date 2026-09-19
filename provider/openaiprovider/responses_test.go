@@ -7780,6 +7780,64 @@ func TestResponsesToolResult_StructSerializedAsJSON(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamingImageGenerationCall_NoPartial_EmitsResultOnDone(t *testing.T) {
+	// The partial_image events are only sent when partial_images > 0. In the
+	// default case the finished image arrives only on output_item.done, so the
+	// result must still be surfaced from there.
+	const imageBase64 = "iVBORw0KGgo="
+	const input = `
+            {
+                "model":"gpt-4o-mini",
+                "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"draw"}]}],
+                "stream":true
+            }
+            `
+	const output = `event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_001","object":"response","created_at":1741892091,"status":"in_progress","model":"gpt-4o-mini","output":[]}}
+
+event: response.image_generation_call.in_progress
+data: {"type":"response.image_generation_call.in_progress","sequence_number":1,"output_index":0,"item_id":"ig_123"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"type":"image_generation_call","id":"ig_123","status":"completed","result":"` + imageBase64 + `"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_001","object":"response","created_at":1741892091,"status":"completed","model":"gpt-4o-mini","output":[]}}
+
+`
+	server := newTestResponsesServerStreaming(t, input, output)
+	defer server.Close()
+
+	a := newTestResponsesClient(server, "gpt-4o-mini")
+	var result *message.ImageGenerationToolResultContent
+	var calls int
+	for update, err := range a.RunText(t.Context(), "draw", agent.Stream(true)) {
+		if err != nil {
+			t.Fatalf("error = %v", err)
+		}
+		for _, content := range update.Contents {
+			switch c := content.(type) {
+			case *message.ImageGenerationToolCallContent:
+				calls++
+			case *message.ImageGenerationToolResultContent:
+				result = c
+			}
+		}
+	}
+	// The call is emitted once (from the in-progress event); the done event must
+	// add the result without re-emitting the call.
+	if calls != 1 {
+		t.Fatalf("ImageGenerationToolCallContent count = %d, want 1", calls)
+	}
+	if result == nil || result.CallID != "ig_123" || len(result.Outputs) != 1 {
+		t.Fatalf("result = %#v, want one output for CallID ig_123", result)
+	}
+	image, ok := result.Outputs[0].(*message.DataContent)
+	if !ok || image.Data != imageBase64 {
+		t.Fatalf("output = %#v, want DataContent with the image", result.Outputs[0])
+	}
+}
+
 func TestResponsesFunctionCallUsesToolCallsFinishReason_NonStreaming(t *testing.T) {
 	const input = `{
 		"model":"gpt-4o-mini",
