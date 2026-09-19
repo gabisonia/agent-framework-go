@@ -187,6 +187,129 @@ func TestCallConvertsMCPContentTypes(t *testing.T) {
 	}
 }
 
+func TestCallPreservesContentMetadata(t *testing.T) {
+	meta := mcp.Meta{"source": "returns-policy.pdf", "page": 3}
+	for _, tc := range []struct {
+		name    string
+		content mcp.Content
+	}{
+		{"text", &mcp.TextContent{Text: "hello", Meta: meta}},
+		{"image", &mcp.ImageContent{Data: []byte("image"), MIMEType: "image/png", Meta: meta}},
+		{"audio", &mcp.AudioContent{Data: []byte("audio"), MIMEType: "audio/wav", Meta: meta}},
+		{"link", &mcp.ResourceLink{URI: "https://example.com/doc", Meta: meta}},
+		{"embedded text", &mcp.EmbeddedResource{Meta: meta, Resource: &mcp.ResourceContents{
+			URI: "file://note.txt", Text: "hello", Meta: mcp.Meta{"source": "nested"},
+		}}},
+		{"embedded blob", &mcp.EmbeddedResource{Meta: meta, Resource: &mcp.ResourceContents{
+			URI: "file://data.bin", Blob: []byte("data"),
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := callSingleMCPContent(t, tc.content)
+			header := content.Header()
+			if header.AdditionalProperties["source"] != "returns-policy.pdf" || header.AdditionalProperties["page"] != float64(3) {
+				t.Fatalf("AdditionalProperties = %#v, want content-block metadata", header.AdditionalProperties)
+			}
+			if header.RawRepresentation == nil {
+				t.Fatal("RawRepresentation was lost")
+			}
+			// Updating framework metadata must not change the raw protocol object's map.
+			header.AdditionalProperties["source"] = "changed"
+			raw, err := json.Marshal(header.RawRepresentation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Meta mcp.Meta `json:"_meta"`
+			}
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire.Meta["source"] != "returns-policy.pdf" {
+				t.Fatal("framework metadata aliases RawRepresentation metadata")
+			}
+		})
+	}
+	content := callSingleMCPContent(t, &mcp.TextContent{Text: "no metadata"})
+	if content.Header().AdditionalProperties != nil {
+		t.Fatalf("AdditionalProperties = %#v, want nil", content.Header().AdditionalProperties)
+	}
+}
+
+func TestAddToolPreservesContentMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content message.Content
+	}{
+		{"text", &message.TextContent{Text: "hello"}},
+		{"error", &message.ErrorContent{Message: "failed"}},
+		{"image", &message.DataContent{Data: "aGk=", MediaType: "image/png"}},
+		{"audio", &message.DataContent{Data: "aGk=", MediaType: "audio/wav"}},
+		{"text resource", &message.DataContent{Data: "aGk=", MediaType: "text/plain", Name: "file://note.txt"}},
+		{"binary resource", &message.DataContent{Data: "aGk=", MediaType: "application/octet-stream", Name: "file://data.bin"}},
+		{"invalid UTF-8 text", &message.DataContent{Data: "/w==", MediaType: "text/plain", Name: "file://data.bin"}},
+		{"invalid base64", &message.DataContent{Data: "!", MediaType: "image/png"}},
+		{"link", &message.URIContent{URI: "https://example.com/doc"}},
+		{"JSON fallback", &message.TextReasoningContent{Text: "reasoning"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.content.Header().AdditionalProperties = map[string]any{"source": "returns-policy.pdf", "page": 3}
+			result := callAddedTool(t, stubFuncTool{
+				name: "content", schema: map[string]any{"type": "object"},
+				call: func(context.Context, string) (any, error) { return tc.content, nil },
+			})
+			if len(result.Content) != 1 {
+				t.Fatalf("got %d content blocks, want 1", len(result.Content))
+			}
+			data, err := json.Marshal(result.Content[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Meta mcp.Meta `json:"_meta"`
+			}
+			if err := json.Unmarshal(data, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire.Meta["source"] != "returns-policy.pdf" || wire.Meta["page"] != float64(3) {
+				t.Fatalf("content _meta = %#v, want source and page", wire.Meta)
+			}
+			if resource, ok := result.Content[0].(*mcp.EmbeddedResource); ok && resource.Resource.Meta != nil {
+				t.Fatal("content metadata must be on the outer block, not nested resource data")
+			}
+		})
+	}
+}
+
+func TestAddToolContentWithoutMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content message.Content
+		text    string
+	}{
+		{"text", &message.TextContent{Text: "hello"}, "hello"},
+		{"nil", nil, "null"},
+		{"typed nil", (*message.TextContent)(nil), "null"},
+		{"typed nil fallback", (*message.TextReasoningContent)(nil), "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := callAddedTool(t, stubFuncTool{
+				name: "content", schema: map[string]any{"type": "object"},
+				call: func(context.Context, string) (any, error) {
+					return message.Contents{tc.content}, nil
+				},
+			})
+			if len(result.Content) != 1 {
+				t.Fatalf("got %d content blocks, want 1", len(result.Content))
+			}
+			text, ok := result.Content[0].(*mcp.TextContent)
+			if !ok || text.Text != tc.text || text.Meta != nil {
+				t.Fatalf("content = %#v, want text %q without metadata", result.Content[0], tc.text)
+			}
+		})
+	}
+}
+
 func TestCallConvertsMCPDataContent(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -947,7 +1070,7 @@ func TestCallConvertsMCPToolUseAndToolResultContent(t *testing.T) {
 		},
 		&mcp.ToolResultContent{ //nolint:staticcheck // ToolResultContent is deprecated per SEP-2577 but remains functional during the deprecation window.
 			ToolUseID:         "call-1",
-			Content:           []mcp.Content{&mcp.TextContent{Text: "done"}},
+			Content:           []mcp.Content{&mcp.TextContent{Text: "done", Meta: mcp.Meta{"source": "nested"}}},
 			StructuredContent: map[string]any{"ok": true},
 			IsError:           true,
 			Meta:              mcp.Meta{"resultId": "result-1"},
@@ -979,6 +1102,9 @@ func TestCallConvertsMCPToolUseAndToolResultContent(t *testing.T) {
 	if rawToolUse.Meta["source"] != "assistant" {
 		t.Fatalf("tool use meta = %#v, want source assistant", rawToolUse.Meta)
 	}
+	if toolUse.AdditionalProperties["source"] != "assistant" {
+		t.Fatalf("tool use AdditionalProperties = %#v, want source assistant", toolUse.AdditionalProperties)
+	}
 
 	toolResult := contents[1].(*message.TextContent)
 	if toolResult.Text != "done" {
@@ -997,6 +1123,9 @@ func TestCallConvertsMCPToolUseAndToolResultContent(t *testing.T) {
 	}
 	if rawToolResult.Meta["resultId"] != "result-1" {
 		t.Fatalf("tool result meta = %#v, want resultId result-1", rawToolResult.Meta)
+	}
+	if toolResult.AdditionalProperties["source"] != "nested" || toolResult.AdditionalProperties["resultId"] != nil {
+		t.Fatalf("tool result AdditionalProperties = %#v, want nested content metadata only", toolResult.AdditionalProperties)
 	}
 }
 

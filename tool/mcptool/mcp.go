@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"unicode/utf8"
@@ -86,7 +87,7 @@ func mcpCallToolResultToAgentContent(result *mcp.CallToolResult) message.Content
 	if mcpCallToolResultNeedsEnvelope(result) {
 		return message.Contents{
 			&message.TextContent{
-				ContentHeader: mcpContentHeader(result),
+				ContentHeader: mcpContentHeader(result, nil),
 				Text:          jsonText(result),
 			},
 		}
@@ -138,14 +139,14 @@ func mcpContentToAgentContentWithRaw(mcpContents []mcp.Content, rawOverride any)
 		switch contentValue := contentValue.(type) {
 		case *mcp.TextContent:
 			result = append(result, &message.TextContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 				Text:          contentValue.Text,
 			})
 
 		case *mcp.ImageContent:
 			data, mediaType := mcpDataContent(contentValue.Data, contentValue.MIMEType, "image/*")
 			result = append(result, &message.DataContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 				Data:          data,
 				MediaType:     mediaType,
 			})
@@ -153,14 +154,14 @@ func mcpContentToAgentContentWithRaw(mcpContents []mcp.Content, rawOverride any)
 		case *mcp.AudioContent:
 			data, mediaType := mcpDataContent(contentValue.Data, contentValue.MIMEType, "audio/*")
 			result = append(result, &message.DataContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 				Data:          data,
 				MediaType:     mediaType,
 			})
 
 		case *mcp.ResourceLink:
 			result = append(result, &message.URIContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 				MediaType:     contentValue.MIMEType,
 				URI:           contentValue.URI,
 			})
@@ -170,7 +171,7 @@ func mcpContentToAgentContentWithRaw(mcpContents []mcp.Content, rawOverride any)
 
 		case *mcp.ToolUseContent: //nolint:staticcheck // ToolUseContent is deprecated per SEP-2577 but remains functional during the deprecation window.
 			result = append(result, &message.TextContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 				Text:          jsonText(contentValue),
 			})
 
@@ -180,14 +181,14 @@ func mcpContentToAgentContentWithRaw(mcpContents []mcp.Content, rawOverride any)
 				result = append(result, nestedContents...)
 			} else {
 				result = append(result, &message.TextContent{
-					ContentHeader: mcpContentHeader(raw),
+					ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 					Text:          jsonText(contentValue.StructuredContent),
 				})
 			}
 
 		default:
 			result = append(result, &message.TextContent{
-				ContentHeader: mcpContentHeader(raw),
+				ContentHeader: mcpContentHeader(raw, nil),
 				Text:          fmt.Sprintf("[Unknown MCP content type: %T]", contentValue),
 			})
 		}
@@ -199,12 +200,12 @@ func mcpContentToAgentContentWithRaw(mcpContents []mcp.Content, rawOverride any)
 func mcpEmbeddedResourceToAgentContent(contentValue *mcp.EmbeddedResource, raw any) message.Content {
 	if contentValue.Resource == nil {
 		return &message.TextContent{
-			ContentHeader: mcpContentHeader(raw),
+			ContentHeader: mcpContentHeader(raw, contentValue.Meta),
 			Text:          "[MCP embedded resource missing resource data]",
 		}
 	}
 
-	header := mcpContentHeader(raw)
+	header := mcpContentHeader(raw, contentValue.Meta)
 	if contentValue.Resource.Text != "" {
 		return &message.TextContent{
 			ContentHeader: header,
@@ -221,9 +222,10 @@ func mcpEmbeddedResourceToAgentContent(contentValue *mcp.EmbeddedResource, raw a
 	}
 }
 
-func mcpContentHeader(raw any) message.ContentHeader {
+func mcpContentHeader(raw any, meta mcp.Meta) message.ContentHeader {
 	return message.ContentHeader{
-		RawRepresentation: raw,
+		RawRepresentation:    raw,
+		AdditionalProperties: maps.Clone(meta),
 	}
 }
 
@@ -389,23 +391,24 @@ func agentContentToMCPContent(contentValue message.Content) mcp.Content {
 	switch c := contentValue.(type) {
 	case *message.TextContent:
 		if c != nil {
-			return &mcp.TextContent{Text: c.Text}
+			return &mcp.TextContent{Text: c.Text, Meta: maps.Clone(c.AdditionalProperties)}
 		}
 	case *message.ErrorContent:
 		if c != nil {
-			return &mcp.TextContent{Text: c.Message}
+			return &mcp.TextContent{Text: c.Message, Meta: maps.Clone(c.AdditionalProperties)}
 		}
 	case *message.DataContent:
 		if c != nil {
+			meta := maps.Clone(c.AdditionalProperties)
 			data, err := base64.StdEncoding.DecodeString(c.Data)
 			if err != nil {
-				return &mcp.TextContent{Text: fmt.Sprintf("[Invalid data content: %v]", err)}
+				return &mcp.TextContent{Text: fmt.Sprintf("[Invalid data content: %v]", err), Meta: meta}
 			}
 			switch c.TopLevelMediaType() {
 			case "image":
-				return &mcp.ImageContent{Data: data, MIMEType: c.MediaType}
+				return &mcp.ImageContent{Data: data, MIMEType: c.MediaType, Meta: meta}
 			case "audio":
-				return &mcp.AudioContent{Data: data, MIMEType: c.MediaType}
+				return &mcp.AudioContent{Data: data, MIMEType: c.MediaType, Meta: meta}
 			case "text":
 				// Text resources carry their payload in Text, not Blob. The reverse
 				// mapping (mcpContentToAgentContent) already reads Resource.Text for
@@ -413,19 +416,19 @@ func agentContentToMCPContent(contentValue message.Content) mcp.Content {
 				// Non-UTF-8 payloads cannot survive JSON transport as Text (invalid
 				// sequences are replaced), so fall back to Blob for those.
 				if utf8.Valid(data) {
-					return &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{
+					return &mcp.EmbeddedResource{Meta: meta, Resource: &mcp.ResourceContents{
 						URI:      c.Name,
 						MIMEType: c.MediaType,
 						Text:     string(data),
 					}}
 				}
-				return &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{
+				return &mcp.EmbeddedResource{Meta: meta, Resource: &mcp.ResourceContents{
 					URI:      c.Name,
 					MIMEType: c.MediaType,
 					Blob:     data,
 				}}
 			default:
-				return &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{
+				return &mcp.EmbeddedResource{Meta: meta, Resource: &mcp.ResourceContents{
 					URI:      c.Name,
 					MIMEType: c.MediaType,
 					Blob:     data,
@@ -434,10 +437,14 @@ func agentContentToMCPContent(contentValue message.Content) mcp.Content {
 		}
 	case *message.URIContent:
 		if c != nil {
-			return &mcp.ResourceLink{URI: c.URI, MIMEType: c.MediaType}
+			return &mcp.ResourceLink{URI: c.URI, MIMEType: c.MediaType, Meta: maps.Clone(c.AdditionalProperties)}
 		}
 	}
-	return &mcp.TextContent{Text: jsonText(contentValue)}
+	var meta mcp.Meta
+	if contentValue != nil && (reflect.ValueOf(contentValue).Kind() != reflect.Pointer || !reflect.ValueOf(contentValue).IsNil()) {
+		meta = maps.Clone(contentValue.Header().AdditionalProperties)
+	}
+	return &mcp.TextContent{Text: jsonText(contentValue), Meta: meta}
 }
 
 var (
