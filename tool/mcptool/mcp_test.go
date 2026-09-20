@@ -744,6 +744,7 @@ func TestAddToolArrayOutputSchemaReferences(t *testing.T) {
 	}{
 		{"definitions", `{"type":"array","items":{"$ref":"#/$defs/order"},"$defs":{"order":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}}`, `[{"id":"ORD-1042"}]`},
 		{"encoded reference", `{"type":"array","items":{"$ref":"#%2F$defs%2Forder"},"$defs":{"order":{"type":"string"}}}`, `["ORD-1042"]`},
+		{"content schema", `{"type":"array","items":{"type":"string","contentMediaType":"application/json","contentSchema":{"$ref":"#/$defs/order"}},"$defs":{"order":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}}`, `["{\"id\":\"ORD-1042\"}"]`},
 		{"recursive", `{"type":"array","items":{"anyOf":[{"type":"string"},{"$ref":"#"}]}}`, `["root",["child"]]`},
 		{"schema ID", `{"$id":"https://example.com/orders","type":"array","items":{"$ref":"#/$defs/id"},"$defs":{"id":{"type":"string"}}}`, `["ORD-1042"]`},
 		{"schema dialect", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"array","items":{"type":"string"}}`, `["ORD-1042"]`},

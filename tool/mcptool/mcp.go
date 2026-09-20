@@ -366,7 +366,7 @@ func relocateOutputSchemaRefs(value any) {
 						relocateOutputSchemaRefs(child)
 					}
 				}
-			case "items", "prefixItems", "contains", "additionalItems", "additionalProperties",
+			case "items", "prefixItems", "contains", "contentSchema", "additionalItems", "additionalProperties",
 				"unevaluatedItems", "unevaluatedProperties", "propertyNames", "allOf", "anyOf", "oneOf", "not", "if", "then", "else":
 				relocateOutputSchemaRefs(child)
 			}
