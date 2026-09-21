@@ -30,6 +30,9 @@ import (
 // Array return schemas and their structured results are wrapped in an object with
 // a "result" property so structured output also works with older MCP clients.
 // The text content retains the original JSON for existing clients.
+// Explicit MCP results and MCP/framework content bypass this wrapping. When an
+// output schema is advertised, callers returning these types must provide
+// structured content matching that schema for successful results.
 func AddTool(src *mcp.Server, tl tool.FuncTool) {
 	outputSchema, wrapOutput := mcpOutputSchema(tl.ReturnSchema())
 	src.AddTool(&mcp.Tool{
