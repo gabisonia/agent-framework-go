@@ -51,8 +51,12 @@ type FunctionInvocationContext struct {
 	// It is empty when the provider supplied no ID or there is no invocation context.
 	CallID string
 
-	// Arguments contains the raw JSON passed to the tool. Middleware may replace
-	// it before calling next. The tool retains responsibility for input validation.
+	// Arguments contains raw JSON, matching [tool.FuncTool.Call]. Middleware
+	// receives it before any validation or normalization performed by the
+	// underlying tool.
+	//
+	// Middleware may replace it before calling next. To inspect or change
+	// individual fields, decode the JSON and encode any changes back into Arguments.
 	Arguments string
 }
 
