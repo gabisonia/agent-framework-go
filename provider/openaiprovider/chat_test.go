@@ -428,6 +428,53 @@ func TestChatBasicRequestResponse_NonStreaming(t *testing.T) {
 	}
 }
 
+// Some OpenAI-compatible endpoints still emit the deprecated "function_call"
+// finish reason; it must be normalized to the canonical "tool_calls", matching
+// the Python client.
+func TestChatLegacyFunctionCallFinishReasonNormalized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-fc","object":"chat.completion","created":1727888631,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"function_call"}]}`)
+	}))
+	defer server.Close()
+
+	resp, err := newTestClient(server).RunText(t.Context(), "hi").Collect()
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if resp.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "tool_calls")
+	}
+}
+
+// The streaming path must normalize the legacy "function_call" finish reason too.
+func TestChatLegacyFunctionCallFinishReasonNormalized_Streaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"function_call\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	var reasons []string
+	for update, err := range newTestClient(server).RunText(t.Context(), "hi", agent.Stream(true)) {
+		if err != nil {
+			t.Fatalf("error = %v", err)
+		}
+		if update.FinishReason != "" {
+			reasons = append(reasons, update.FinishReason)
+		}
+	}
+	for _, r := range reasons {
+		if r == "function_call" {
+			t.Errorf("streaming FinishReason = %q, want it normalized to tool_calls", r)
+		}
+	}
+	if len(reasons) == 0 || reasons[len(reasons)-1] != "tool_calls" {
+		t.Errorf("streaming finish reasons = %v, want a terminal tool_calls", reasons)
+	}
+}
+
 func TestChatURLCitationAnnotations_NonStreaming(t *testing.T) {
 	const input = `
             {
