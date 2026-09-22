@@ -94,6 +94,11 @@ type Config struct {
 	// Middlewares wrap the agent lifecycle before history and context providers.
 	Middlewares []Middleware
 
+	// ProviderMiddlewares run after history and context providers, before
+	// [ProviderConfig.Middlewares]. Register function-invocation middleware here
+	// so it can wrap tools supplied by context providers before automatic tool calls.
+	ProviderMiddlewares []Middleware
+
 	// MessageInjector configures mid-run message injection. Call its
 	// EnqueueMessages method to queue messages. Nil disables message injection.
 	MessageInjector *MessageInjector
@@ -125,7 +130,8 @@ func New(prov ProviderConfig, cfg Config) *Agent {
 	if cfg.Logger != nil && !cfg.DisableRunLogs {
 		agentMiddlewares = append([]Middleware{newRunLoggerMiddleware(cfg.Logger, cfg.LogSensitiveData)}, agentMiddlewares...)
 	}
-	providerMiddlewares := make([]Middleware, 0, len(prov.Middlewares)+2)
+	providerMiddlewares := make([]Middleware, 0, len(cfg.ProviderMiddlewares)+len(prov.Middlewares)+2)
+	providerMiddlewares = append(providerMiddlewares, cfg.ProviderMiddlewares...)
 	providerMiddlewares = append(providerMiddlewares, prov.Middlewares...)
 	if cfg.MessageInjector != nil {
 		providerMiddlewares = append(providerMiddlewares, MiddlewareFunc(cfg.MessageInjector.run))

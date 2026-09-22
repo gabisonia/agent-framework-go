@@ -66,10 +66,12 @@ type FunctionInvocationContext struct {
 // inspected or replaced after next returns.
 // Skipping next replaces only this invocation; it does not terminate the agent loop.
 //
-// Register it as a [Middleware] before the automatic tool-call middleware and
-// after components that supply tools. For tools from context providers, use
-// [ProviderConfig.Middlewares]. Function tools configured separately on the
-// automatic tool-call middleware are also wrapped, without adding them to provider requests.
+// Register it in [Config.ProviderMiddlewares] so it runs after context providers
+// and before automatic tool calls, including when using provider constructors.
+// When constructing an agent directly, [ProviderConfig.Middlewares] also works
+// if it precedes the automatic tool-call middleware. Function tools configured
+// separately on the automatic tool-call middleware are also wrapped, without
+// adding them to provider requests.
 // Approval requirements and tool schemas are preserved. Callbacks run only when
 // the tool is invoked, including after approval, not when approval is requested.
 //

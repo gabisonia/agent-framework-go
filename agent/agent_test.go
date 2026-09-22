@@ -2374,7 +2374,7 @@ func TestAgent_Run_UsesContextProvidersInOrder(t *testing.T) {
 
 func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *testing.T) {
 	contextTool := stubTool{name: "context-tool"}
-	sequence := make([]string, 0, 5)
+	sequence := make([]string, 0, 7)
 	var agentTools []tool.Tool
 	var historyMessages []string
 	var contextMessages []string
@@ -2404,6 +2404,17 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 			return []*message.Message{message.NewText("context")}, []agent.Option{agent.WithTool(contextTool)}, nil
 		},
 	})
+	first := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+		sequence = append(sequence, "configured-first")
+		if got := toolNames(slices.Collect(agent.AllOptions(options, agent.WithTool))); !slices.Equal(got, []string{"context-tool"}) {
+			t.Errorf("configured provider middleware tools = %v, want [context-tool]", got)
+		}
+		return next(ctx, messages, options...)
+	})
+	second := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+		sequence = append(sequence, "configured-second")
+		return next(ctx, messages, options...)
+	})
 	providerMiddleware := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
 		sequence = append(sequence, "provider")
 		providerMessages = messageStrings(messages)
@@ -2422,11 +2433,12 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 		Run:         runFn,
 		Middlewares: []agent.Middleware{providerMiddleware},
 	}, agent.Config{
-		ID:               "test-agent",
-		Name:             "test-agent",
-		Middlewares:      []agent.Middleware{agentMiddleware},
-		HistoryProvider:  historyProvider,
-		ContextProviders: []agent.ContextProvider{contextProvider},
+		ID:                  "test-agent",
+		Name:                "test-agent",
+		Middlewares:         []agent.Middleware{agentMiddleware},
+		ProviderMiddlewares: []agent.Middleware{first, nil, second},
+		HistoryProvider:     historyProvider,
+		ContextProviders:    []agent.ContextProvider{contextProvider},
 	})
 
 	_, err := a.RunText(t.Context(), "input", agent.WithSession(agenttest.CreateSession())).Collect()
@@ -2434,7 +2446,7 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedSequence := []string{"agent", "history", "context", "provider", "run"}
+	expectedSequence := []string{"agent", "history", "context", "configured-first", "configured-second", "provider", "run"}
 	if !slices.Equal(sequence, expectedSequence) {
 		t.Fatalf("expected sequence %v, got %v", expectedSequence, sequence)
 	}

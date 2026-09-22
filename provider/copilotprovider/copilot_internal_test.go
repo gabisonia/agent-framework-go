@@ -5,6 +5,7 @@ package copilotprovider
 import (
 	"bytes"
 	"context"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -12,9 +13,66 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/microsoft/agent-framework-go/agent"
+	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
 	"github.com/microsoft/agent-framework-go/tool/functool"
 )
+
+func TestCopilotTool_FunctionInvocationIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		callID string
+		trace  bool
+	}{
+		{name: "trace context", callID: "call-1", trace: true},
+		{name: "nil trace context", callID: "call-2"},
+		{name: "missing call ID", trace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type contextKey struct{}
+			var traceContext context.Context
+			if tc.trace {
+				traceContext = context.WithValue(t.Context(), contextKey{}, "trace")
+			}
+			var toolCalls, middlewareCalls int
+			fn := functool.MustNew(functool.Config{Name: "lookup", Description: "Look up a value"}, func(ctx context.Context, _ struct{}) (string, error) {
+				toolCalls++
+				if tc.trace && ctx.Value(contextKey{}) != "trace" {
+					t.Error("tool lost the trace context")
+				}
+				return "found", nil
+			})
+			middleware := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
+				middlewareCalls++
+				if invocation.Function != fn || invocation.CallID != tc.callID {
+					t.Errorf("unexpected invocation: %#v", invocation)
+				}
+				return next(ctx, invocation)
+			})
+			run := func(_ context.Context, _ []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+				return func(yield func(*agent.ResponseUpdate, error) bool) {
+					wrapped, _ := agent.GetOption(options, agent.WithTool)
+					converted, err := toCopilotTool(wrapped.(tool.FuncTool))
+					if err != nil {
+						yield(nil, err)
+						return
+					}
+					_, err = converted.Handler(copilot.ToolInvocation{ToolCallID: tc.callID, Arguments: map[string]any{}, TraceContext: traceContext})
+					if err != nil {
+						yield(nil, err)
+					}
+				}
+			}
+			a := agent.New(agent.ProviderConfig{Run: run, Middlewares: []agent.Middleware{middleware}}, agent.Config{Tools: []tool.Tool{fn}})
+			if _, err := a.RunText(t.Context(), "lookup").Collect(); err != nil {
+				t.Fatal(err)
+			}
+			if middlewareCalls != 1 || toolCalls != 1 {
+				t.Errorf("calls = middleware:%d tool:%d, want both 1", middlewareCalls, toolCalls)
+			}
+		})
+	}
+}
 
 func TestSessionConfig_WithApprovalRequiredTool_InstallsAskPreToolUseHook(t *testing.T) {
 	dangerousTool := tool.ApprovalRequiredFunc(testFuncTool(t, "dangerous"))
