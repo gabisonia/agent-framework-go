@@ -45,7 +45,7 @@ func TestFunctionInvocationMiddleware_Composition(t *testing.T) {
 				}
 				return args.Value, tc.toolError
 			})
-			first := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+			first := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
 				order = append(order, "first before")
 				if invocation.Function != fn || invocation.Arguments != `{"value":"original"}` || invocation.CallID != "" {
 					t.Errorf("unexpected direct invocation: %#v", invocation)
@@ -61,7 +61,7 @@ func TestFunctionInvocationMiddleware_Composition(t *testing.T) {
 				}
 				return "wrapped " + result.(string), nil
 			})
-			second := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+			second := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
 				order = append(order, "second before")
 				result, err := next(ctx, invocation)
 				order = append(order, "second after")

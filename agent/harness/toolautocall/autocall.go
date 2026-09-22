@@ -20,7 +20,6 @@ import (
 	"github.com/microsoft/agent-framework-go/agent"
 	"github.com/microsoft/agent-framework-go/internal/otelx"
 	"github.com/microsoft/agent-framework-go/internal/slogx"
-	"github.com/microsoft/agent-framework-go/internal/toolcontext"
 	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
@@ -1165,7 +1164,7 @@ func (f *autocall) processFunctionCall(ctx context.Context, tools map[string]too
 	}
 	f.logger.Debug(ctx, "calling function", "funcName", funcCall.Name, slogx.SensitiveData("arguments", funcCall.Arguments))
 	start := time.Now()
-	ctx = toolcontext.WithCallID(ctx, funcCall.CallID)
+	ctx = toolmiddleware.WithCallID(ctx, funcCall.CallID)
 	ctx, span := startToolSpan(ctx, funcCall, declaration)
 	if span != nil {
 		defer span.End()

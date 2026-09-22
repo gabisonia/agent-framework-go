@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/agent-framework-go/agent/harness/toolautocall"
 	"github.com/microsoft/agent-framework-go/internal/agenttest"
 	"github.com/microsoft/agent-framework-go/internal/messagetest"
+	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
 	"github.com/microsoft/agent-framework-go/tool/functool"
@@ -73,19 +74,19 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 			},
 			) (string, error) {
 				handlerCalls.Add(1)
-				invocation, ok := tool.InvocationFromContext(ctx)
-				if !ok || invocation.CallID != args.ID {
-					t.Errorf("handler identity = %#v, %v; want call ID %q", invocation, ok, args.ID)
+				callID, ok := toolmiddleware.CallIDFromContext(ctx)
+				if !ok || callID != args.ID {
+					t.Errorf("handler call ID = %q, %v; want %q", callID, ok, args.ID)
 				}
 				if tc.wrap && ctx.Value(auditKey{}) != args.ID {
 					t.Errorf("wrapper context value = %v, want %q", ctx.Value(auditKey{}), args.ID)
 				}
 				return args.ID, tc.toolError
 			})
-			observer := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+			observer := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
 				wrapperCalls.Add(1)
-				identity, ok := tool.InvocationFromContext(ctx)
-				if !ok || identity.CallID != invocation.CallID || invocation.Function != testTool {
+				callID, ok := toolmiddleware.CallIDFromContext(ctx)
+				if !ok || callID != invocation.CallID || invocation.Function != testTool {
 					t.Error("callback did not receive the original tool and invocation identity")
 				}
 				result, err := next(context.WithValue(ctx, auditKey{}, invocation.CallID), invocation)
@@ -97,7 +98,7 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 				}
 				return result, err
 			})
-			inner := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+			inner := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
 				innerCalls.Add(1)
 				if ctx.Value(auditKey{}) != invocation.CallID {
 					t.Error("callbacks did not execute in registration order")
@@ -105,8 +106,8 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 				return next(ctx, invocation)
 			})
 			checkProviderContext := func(ctx context.Context, _ []*message.Message, opts ...agent.Option) {
-				if invocation, ok := tool.InvocationFromContext(ctx); ok {
-					t.Errorf("invocation leaked to provider: %#v", invocation)
+				if callID, ok := toolmiddleware.CallIDFromContext(ctx); ok {
+					t.Errorf("call ID leaked to provider: %q", callID)
 				}
 				if tc.additional && len(slices.Collect(agent.AllOptions(opts, agent.WithTool))) != 0 {
 					t.Error("additional tools leaked into provider options")

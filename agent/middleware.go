@@ -60,9 +60,6 @@ type FunctionInvocationContext struct {
 	Arguments string
 }
 
-// FunctionInvocationFunc invokes the next function middleware or underlying tool.
-type FunctionInvocationFunc func(context.Context, *FunctionInvocationContext) (any, error)
-
 // FunctionInvocationMiddleware intercepts function calls by wrapping tools in
 // agent options. Call next to continue execution, or return a result/error without
 // calling next to replace the tool's behavior. Results and errors may also be
@@ -79,7 +76,7 @@ type FunctionInvocationFunc func(context.Context, *FunctionInvocationContext) (a
 // Multiple callbacks execute in registration order, with the first outermost.
 // Each call gets its own FunctionInvocationContext; callbacks must synchronize
 // shared application state if tools can execute concurrently.
-type FunctionInvocationMiddleware func(ctx context.Context, invocation *FunctionInvocationContext, next FunctionInvocationFunc) (any, error)
+type FunctionInvocationMiddleware func(next func(context.Context, *FunctionInvocationContext) (any, error), ctx context.Context, invocation *FunctionInvocationContext) (any, error)
 
 // Run wraps the function tools passed to next without modifying the input options.
 func (mf FunctionInvocationMiddleware) Run(next RunFunc, ctx context.Context, messages []*message.Message, options ...Option) iter.Seq2[*ResponseUpdate, error] {
@@ -122,15 +119,15 @@ func (t *functionInvocationTool) ApprovalRequired() bool {
 }
 
 func (t *functionInvocationTool) Call(ctx context.Context, args string) (any, error) {
-	identity, _ := tool.InvocationFromContext(ctx)
-	invocation := &FunctionInvocationContext{Function: t.FuncTool, CallID: identity.CallID, Arguments: args}
-	var next FunctionInvocationFunc = func(ctx context.Context, invocation *FunctionInvocationContext) (any, error) {
+	callID, _ := toolmiddleware.CallIDFromContext(ctx)
+	invocation := &FunctionInvocationContext{Function: t.FuncTool, CallID: callID, Arguments: args}
+	next := func(ctx context.Context, invocation *FunctionInvocationContext) (any, error) {
 		return t.FuncTool.Call(ctx, invocation.Arguments)
 	}
 	for _, middleware := range slices.Backward(t.middlewares) {
 		inner := next
 		next = func(ctx context.Context, invocation *FunctionInvocationContext) (any, error) {
-			return middleware(ctx, invocation, inner)
+			return middleware(inner, ctx, invocation)
 		}
 	}
 	return next(ctx, invocation)

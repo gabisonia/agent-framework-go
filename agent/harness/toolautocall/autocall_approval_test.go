@@ -13,6 +13,7 @@ import (
 	"github.com/microsoft/agent-framework-go/agent/harness/toolautocall"
 	"github.com/microsoft/agent-framework-go/internal/agenttest"
 	"github.com/microsoft/agent-framework-go/internal/messagetest"
+	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
 	"github.com/microsoft/agent-framework-go/tool/functool"
@@ -47,13 +48,13 @@ func TestFunctionInvoking_InvocationIdentityAfterApproval(t *testing.T) {
 			var toolCalls int
 			testTool := tool.ApprovalRequiredFunc(functool.MustNew(functool.Config{Name: "lookup"}, func(ctx context.Context, _ struct{}) (string, error) {
 				toolCalls++
-				invocation, ok := tool.InvocationFromContext(ctx)
-				if !ok || invocation.CallID != "call-1" {
-					t.Errorf("handler identity = %#v, %v; want call-1", invocation, ok)
+				callID, ok := toolmiddleware.CallIDFromContext(ctx)
+				if !ok || callID != "call-1" {
+					t.Errorf("handler call ID = %q, %v; want call-1", callID, ok)
 				}
 				return "done", nil
 			}))
-			observer := agent.FunctionInvocationMiddleware(func(ctx context.Context, invocation *agent.FunctionInvocationContext, next agent.FunctionInvocationFunc) (any, error) {
+			observer := agent.FunctionInvocationMiddleware(func(next func(context.Context, *agent.FunctionInvocationContext) (any, error), ctx context.Context, invocation *agent.FunctionInvocationContext) (any, error) {
 				observedIDs = append(observedIDs, invocation.CallID)
 				if tc.shortCircuit {
 					return "cached", nil
