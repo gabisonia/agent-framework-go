@@ -6,12 +6,12 @@ import (
 	"context"
 	"errors"
 	"iter"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/microsoft/agent-framework-go/agent"
+	"github.com/microsoft/agent-framework-go/agent/harness/toolautocall"
 	"github.com/microsoft/agent-framework-go/internal/agenttest"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
@@ -72,40 +72,47 @@ func TestFunctionInvocationMiddleware_Composition(t *testing.T) {
 			provider := agent.NewContextProvider(agent.ContextProviderConfig{SourceID: "tools", Provide: func(context.Context, agent.InvokingContext) ([]*message.Message, []agent.Option, error) {
 				return nil, options, nil
 			}})
-			run := func(ctx context.Context, _ []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-				return func(yield func(*agent.ResponseUpdate, error) bool) {
-					tools := slices.Collect(agent.AllOptions(opts, agent.WithTool))
-					if len(tools) != 2 || tools[1] != other {
-						t.Fatalf("unexpected tools: %v", tools)
-					}
-					wrapped := tools[0].(tool.FuncTool)
-					if wrapped.Name() != fn.Name() || wrapped.Description() != fn.Description() ||
-						!reflect.DeepEqual(wrapped.Schema(), fn.Schema()) || !reflect.DeepEqual(wrapped.ReturnSchema(), fn.ReturnSchema()) {
-						t.Error("wrapper changed tool metadata")
-					}
-					result, err := wrapped.Call(ctx, `{"value":"original"}`)
-					if err != nil {
-						yield(nil, err)
-						return
-					}
-					want := "wrapped changed"
-					if tc.short {
-						want = "cached"
-					}
-					if result != want {
-						t.Errorf("result = %v, want %q", result, want)
-					}
-					yield(&agent.ResponseUpdate{Role: message.RoleAssistant, Contents: message.Contents{&message.TextContent{Text: "done"}}}, nil)
+			checkTools := func(_ context.Context, _ []*message.Message, opts ...agent.Option) {
+				tools := slices.Collect(agent.AllOptions(opts, agent.WithTool))
+				if len(tools) != 2 || tools[0] != fn || tools[1] != other {
+					t.Fatalf("provider tools changed: %v", tools)
 				}
 			}
-			var nilMiddleware agent.FunctionInvocationMiddleware
-			a := agent.New(agent.ProviderConfig{Run: run, Middlewares: []agent.Middleware{first, nilMiddleware, second}}, agent.Config{
-				ContextProviders: []agent.ContextProvider{provider},
+			var runner agenttest.Runner
+			middlewares := []agent.FunctionInvocationMiddleware{first, nil, second}
+			a := agent.New(agent.ProviderConfig{
+				Run: runner.Run, Middlewares: []agent.Middleware{toolautocall.New(toolautocall.Config{})},
+			}, agent.Config{
+				ContextProviders:    []agent.ContextProvider{provider},
+				FunctionMiddlewares: middlewares,
 			})
+			// Registration owns a copy; later changes to the caller's slice must not affect it.
+			middlewares[0] = nil
 			for range 2 {
 				order = nil
-				if _, err := a.RunText(t.Context(), "start").Collect(); !errors.Is(err, tc.toolError) {
-					t.Fatalf("error = %v, want %v", err, tc.toolError)
+				runner = agenttest.Runner{Responses: agenttest.NewResponseBuilder(checkTools).
+					AddFunctionCall("", "lookup", `{"value":"original"}`).
+					NewTurn(checkTools).AddText("done").Build()}
+				var results []*message.FunctionResultContent
+				for update, err := range a.RunText(t.Context(), "start") {
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, content := range update.Contents {
+						if result, ok := content.(*message.FunctionResultContent); ok {
+							results = append(results, result)
+						}
+					}
+				}
+				if len(results) != 1 || !errors.Is(results[0].Error, tc.toolError) {
+					t.Fatalf("results = %v, want one result with error %v", results, tc.toolError)
+				}
+				wantResult := "wrapped changed"
+				if tc.short {
+					wantResult = "cached"
+				}
+				if tc.toolError == nil && results[0].Result != wantResult {
+					t.Errorf("result = %v, want %q", results[0].Result, wantResult)
 				}
 				wantOrder := []string{"first before", "second before", "tool", "second after", "first after"}
 				if tc.short {
@@ -2374,7 +2381,7 @@ func TestAgent_Run_UsesContextProvidersInOrder(t *testing.T) {
 
 func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *testing.T) {
 	contextTool := stubTool{name: "context-tool"}
-	sequence := make([]string, 0, 7)
+	sequence := make([]string, 0, 5)
 	var agentTools []tool.Tool
 	var historyMessages []string
 	var contextMessages []string
@@ -2404,17 +2411,6 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 			return []*message.Message{message.NewText("context")}, []agent.Option{agent.WithTool(contextTool)}, nil
 		},
 	})
-	first := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-		sequence = append(sequence, "configured-first")
-		if got := toolNames(slices.Collect(agent.AllOptions(options, agent.WithTool))); !slices.Equal(got, []string{"context-tool"}) {
-			t.Errorf("configured provider middleware tools = %v, want [context-tool]", got)
-		}
-		return next(ctx, messages, options...)
-	})
-	second := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-		sequence = append(sequence, "configured-second")
-		return next(ctx, messages, options...)
-	})
 	providerMiddleware := agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
 		sequence = append(sequence, "provider")
 		providerMessages = messageStrings(messages)
@@ -2433,12 +2429,11 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 		Run:         runFn,
 		Middlewares: []agent.Middleware{providerMiddleware},
 	}, agent.Config{
-		ID:                  "test-agent",
-		Name:                "test-agent",
-		Middlewares:         []agent.Middleware{agentMiddleware},
-		ProviderMiddlewares: []agent.Middleware{first, nil, second},
-		HistoryProvider:     historyProvider,
-		ContextProviders:    []agent.ContextProvider{contextProvider},
+		ID:               "test-agent",
+		Name:             "test-agent",
+		Middlewares:      []agent.Middleware{agentMiddleware},
+		HistoryProvider:  historyProvider,
+		ContextProviders: []agent.ContextProvider{contextProvider},
 	})
 
 	_, err := a.RunText(t.Context(), "input", agent.WithSession(agenttest.CreateSession())).Collect()
@@ -2446,7 +2441,7 @@ func TestAgent_Run_PipelineOrder_AgentHistoryContextProviderMiddlewareRun(t *tes
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedSequence := []string{"agent", "history", "context", "configured-first", "configured-second", "provider", "run"}
+	expectedSequence := []string{"agent", "history", "context", "provider", "run"}
 	if !slices.Equal(sequence, expectedSequence) {
 		t.Fatalf("expected sequence %v, got %v", expectedSequence, sequence)
 	}

@@ -20,13 +20,17 @@ import (
 
 func TestCopilotTool_FunctionInvocationIdentity(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		callID string
-		trace  bool
+		name            string
+		callID          string
+		trace           bool
+		contextProvider bool
+		block           bool
 	}{
 		{name: "trace context", callID: "call-1", trace: true},
 		{name: "nil trace context", callID: "call-2"},
 		{name: "missing call ID", trace: true},
+		{name: "context provider tool", callID: "call-3", contextProvider: true},
+		{name: "blocked context provider tool", callID: "call-4", contextProvider: true, block: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			type contextKey struct{}
@@ -47,28 +51,44 @@ func TestCopilotTool_FunctionInvocationIdentity(t *testing.T) {
 				if invocation.Function != fn || invocation.CallID != tc.callID {
 					t.Errorf("unexpected invocation: %#v", invocation)
 				}
+				if tc.block {
+					return "blocked", nil
+				}
 				return next(ctx, invocation)
 			})
 			run := func(_ context.Context, _ []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
 				return func(yield func(*agent.ResponseUpdate, error) bool) {
-					wrapped, _ := agent.GetOption(options, agent.WithTool)
-					converted, err := toCopilotTool(wrapped.(tool.FuncTool))
-					if err != nil {
-						yield(nil, err)
-						return
+					converted := copilotTools(options)
+					if len(converted) != 1 {
+						t.Fatalf("converted tools = %d, want 1", len(converted))
 					}
-					_, err = converted.Handler(copilot.ToolInvocation{ToolCallID: tc.callID, Arguments: map[string]any{}, TraceContext: traceContext})
+					_, err := converted[0].Handler(copilot.ToolInvocation{ToolCallID: tc.callID, Arguments: map[string]any{}, TraceContext: traceContext})
 					if err != nil {
 						yield(nil, err)
 					}
 				}
 			}
-			a := agent.New(agent.ProviderConfig{Run: run, Middlewares: []agent.Middleware{middleware}}, agent.Config{Tools: []tool.Tool{fn}})
+			cfg := agent.Config{FunctionMiddlewares: []agent.FunctionInvocationMiddleware{middleware}}
+			if tc.contextProvider {
+				cfg.ContextProviders = []agent.ContextProvider{agent.NewContextProvider(agent.ContextProviderConfig{
+					SourceID: "tools",
+					Provide: func(context.Context, agent.InvokingContext) ([]*message.Message, []agent.Option, error) {
+						return nil, []agent.Option{agent.WithTool(fn)}, nil
+					},
+				})}
+			} else {
+				cfg.Tools = []tool.Tool{fn}
+			}
+			a := agent.New(agent.ProviderConfig{Run: run}, cfg)
 			if _, err := a.RunText(t.Context(), "lookup").Collect(); err != nil {
 				t.Fatal(err)
 			}
-			if middlewareCalls != 1 || toolCalls != 1 {
-				t.Errorf("calls = middleware:%d tool:%d, want both 1", middlewareCalls, toolCalls)
+			wantToolCalls := 1
+			if tc.block {
+				wantToolCalls = 0
+			}
+			if middlewareCalls != 1 || toolCalls != wantToolCalls {
+				t.Errorf("calls = middleware:%d tool:%d, want 1 and %d", middlewareCalls, toolCalls, wantToolCalls)
 			}
 		})
 	}

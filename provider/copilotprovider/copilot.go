@@ -470,6 +470,11 @@ func copilotTools(options []agent.Option) []copilot.Tool {
 		if !ok {
 			continue
 		}
+		for _, opt := range options {
+			if wrap, ok := opt.(toolmiddleware.Wrapper); ok {
+				funcTool = wrap(funcTool)
+			}
+		}
 		converted, err := toCopilotTool(funcTool)
 		if err != nil {
 			converted = copilot.Tool{

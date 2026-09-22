@@ -623,6 +623,14 @@ func (f *autocall) shouldTerminateLoopBasedOnHandleableFunctions(ctx context.Con
 
 func (f *autocall) createToolsMap(opts []agent.Option) (mtools map[string]tool.SchemaTool, anyRequiredApproval bool) {
 	fn := func(t tool.Tool) {
+		if function, ok := t.(tool.FuncTool); ok {
+			for _, opt := range opts {
+				if wrap, ok := opt.(toolmiddleware.Wrapper); ok {
+					function = wrap(function)
+				}
+			}
+			t = function
+		}
 		if !anyRequiredApproval {
 			if approval, ok := t.(tool.ApprovalRequiredTool); ok && approval.ApprovalRequired() {
 				anyRequiredApproval = true
@@ -644,14 +652,6 @@ func (f *autocall) createToolsMap(opts []agent.Option) (mtools map[string]tool.S
 		fn(t)
 	}
 	for _, t := range f.additionalTools {
-		if function, ok := t.(tool.FuncTool); ok {
-			for _, opt := range opts {
-				if wrap, ok := opt.(toolmiddleware.Wrapper); ok {
-					function = wrap(function)
-				}
-			}
-			t = function
-		}
 		fn(t)
 	}
 	return mtools, anyRequiredApproval

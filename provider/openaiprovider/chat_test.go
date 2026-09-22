@@ -28,7 +28,7 @@ import (
 )
 
 func TestChatCompletionsAgent_FunctionInvocationMiddleware(t *testing.T) {
-	for _, source := range []string{"configured", "context provider"} {
+	for _, source := range []string{"configured", "context provider", "additional"} {
 		for _, block := range []bool{false, true} {
 			name := source + "/allow"
 			if block {
@@ -60,10 +60,14 @@ func TestChatCompletionsAgent_FunctionInvocationMiddleware(t *testing.T) {
 					}
 					return next(ctx, invocation)
 				})
-				cfg := agent.Config{ProviderMiddlewares: []agent.Middleware{middleware}}
-				if source == "configured" {
+				cfg := agent.Config{FunctionMiddlewares: []agent.FunctionInvocationMiddleware{middleware}}
+				autoCall := &toolautocall.Config{}
+				switch source {
+				case "configured":
 					cfg.Tools = []tool.Tool{fn}
-				} else {
+				case "additional":
+					autoCall.AdditionalTools = []tool.Tool{fn}
+				case "context provider":
 					cfg.ContextProviders = []agent.ContextProvider{agent.NewContextProvider(agent.ContextProviderConfig{
 						SourceID: "tools",
 						Provide: func(context.Context, agent.InvokingContext) ([]*message.Message, []agent.Option, error) {
@@ -72,8 +76,9 @@ func TestChatCompletionsAgent_FunctionInvocationMiddleware(t *testing.T) {
 					})}
 				}
 				a := openaiprovider.NewChatCompletionsAgent(openai.NewClient(option.WithAPIKey("test"), option.WithBaseURL(server.URL)), openaiprovider.AgentConfig{
-					Config: cfg,
-					Model:  "test-model",
+					Config:       cfg,
+					Model:        "test-model",
+					ToolAutoCall: autoCall,
 				})
 				for range 2 {
 					if _, err := a.RunText(t.Context(), "lookup").Collect(); err != nil {

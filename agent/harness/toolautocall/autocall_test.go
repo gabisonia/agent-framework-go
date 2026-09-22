@@ -129,18 +129,14 @@ func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 					return "", nil
 				})}
 			}
-			run := toolautocall.New(cfg).Run
-			next := func(ctx context.Context, messages []*message.Message, options ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-				return run(runner.Run, ctx, messages, options...)
-			}
-			var updates iter.Seq2[*agent.ResponseUpdate, error]
+			agentConfig := agent.Config{}
 			if tc.wrap {
-				updates = observer.Run(func(ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
-					return inner.Run(next, ctx, messages, opts...)
-				}, t.Context(), []*message.Message{message.NewText("start")}, options...)
-			} else {
-				updates = next(t.Context(), []*message.Message{message.NewText("start")}, options...)
+				agentConfig.FunctionMiddlewares = []agent.FunctionInvocationMiddleware{observer, inner}
 			}
+			a := agent.New(agent.ProviderConfig{
+				Run: runner.Run, Middlewares: []agent.Middleware{toolautocall.New(cfg)},
+			}, agentConfig)
+			updates := a.RunText(t.Context(), "start", options...)
 			var results []*message.FunctionResultContent
 			for update, err := range updates {
 				if err != nil {

@@ -10,8 +10,8 @@ import (
 	"github.com/microsoft/agent-framework-go/tool"
 )
 
-// Wrapper is an internal run option for wrapping tools registered outside agent options.
-// Tools already present in agent options are wrapped by the originating middleware.
+// Wrapper is an internal run option applied by tool execution to each function
+// tool, independently of how the tool was registered.
 type Wrapper func(tool.FuncTool) tool.FuncTool
 
 // MAFValue implements agent.Option without depending on the agent package.

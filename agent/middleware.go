@@ -60,18 +60,15 @@ type FunctionInvocationContext struct {
 	Arguments string
 }
 
-// FunctionInvocationMiddleware intercepts function calls by wrapping tools in
-// agent options. Call next to continue execution, or return a result/error without
+// FunctionInvocationMiddleware intercepts individual function calls.
+// Call next to continue execution, or return a result/error without
 // calling next to replace the tool's behavior. Results and errors may also be
 // inspected or replaced after next returns.
 // Skipping next replaces only this invocation; it does not terminate the agent loop.
 //
-// Register it in [Config.ProviderMiddlewares] so it runs after context providers
-// and before automatic tool calls, including when using provider constructors.
-// When constructing an agent directly, [ProviderConfig.Middlewares] also works
-// if it precedes the automatic tool-call middleware. Function tools configured
-// separately on the automatic tool-call middleware are also wrapped, without
-// adding them to provider requests.
+// Register it in [Config.FunctionMiddlewares], independently of agent middleware.
+// Callbacks apply when tools are executed, including tools supplied by context
+// providers and additional tools configured on automatic tool execution.
 // Approval requirements and tool schemas are preserved. Callbacks run only when
 // the tool is invoked, including after approval, not when approval is requested.
 //
@@ -79,36 +76,6 @@ type FunctionInvocationContext struct {
 // Each call gets its own FunctionInvocationContext; callbacks must synchronize
 // shared application state if tools can execute concurrently.
 type FunctionInvocationMiddleware func(next func(context.Context, *FunctionInvocationContext) (any, error), ctx context.Context, invocation *FunctionInvocationContext) (any, error)
-
-// Run wraps the function tools passed to next without modifying the input options.
-func (mf FunctionInvocationMiddleware) Run(next RunFunc, ctx context.Context, messages []*message.Message, options ...Option) iter.Seq2[*ResponseUpdate, error] {
-	if mf == nil {
-		return next(ctx, messages, options...)
-	}
-	options = slices.Clone(options)
-	for i, option := range options {
-		opt, ok := option.(toolOpt)
-		if !ok {
-			continue
-		}
-		fn, ok := opt.Tool.(tool.FuncTool)
-		if !ok {
-			continue
-		}
-		options[i] = WithTool(mf.wrap(fn))
-	}
-	options = append(options, toolmiddleware.Wrapper(mf.wrap))
-	return next(ctx, messages, options...)
-}
-
-func (mf FunctionInvocationMiddleware) wrap(fn tool.FuncTool) tool.FuncTool {
-	wrapped := &functionInvocationTool{FuncTool: fn, middlewares: []FunctionInvocationMiddleware{mf}}
-	if previous, ok := fn.(*functionInvocationTool); ok {
-		wrapped.FuncTool = previous.FuncTool
-		wrapped.middlewares = append(slices.Clone(previous.middlewares), mf)
-	}
-	return wrapped
-}
 
 type functionInvocationTool struct {
 	tool.FuncTool

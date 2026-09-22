@@ -74,7 +74,7 @@ func TestFunctionInvoking_InvocationIdentityAfterApproval(t *testing.T) {
 			}
 			a := agent.New(agent.ProviderConfig{
 				Run: runner.Run, Middlewares: []agent.Middleware{toolautocall.New(cfg)},
-			}, agent.Config{Tools: tools, Middlewares: []agent.Middleware{observer}})
+			}, agent.Config{Tools: tools, FunctionMiddlewares: []agent.FunctionInvocationMiddleware{observer}})
 			session := &agent.Session{}
 			var request *message.ToolApprovalRequestContent
 			for update, err := range a.RunText(t.Context(), "start", agent.WithSession(session)) {
