@@ -1220,6 +1220,133 @@ func TestRun_persistentCanceledBeforeCall(t *testing.T) {
 	}
 }
 
+// gatedDeadlineContext pauses timeout setup after the first command has been
+// submitted, while Run still holds the session lock.
+type gatedDeadlineContext struct {
+	context.Context
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *gatedDeadlineContext) Deadline() (time.Time, bool) {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+	return c.Context.Deadline()
+}
+
+func TestRun_persistentCanceledWhileWaiting(t *testing.T) {
+	skipIfNotPOSIX(t)
+	t.Parallel()
+
+	// This deadline bounds failures; channels and the goroutine profile establish
+	// the ordering of the two calls, independently of elapsed time.
+	testCtx, stop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stop()
+	dir := t.TempDir()
+	ft := newLocal(t, shelltool.LocalConfig{
+		Shell:            "/bin/sh",
+		WorkingDirectory: dir,
+		Timeout:          new(5 * time.Second),
+	})
+	t.Cleanup(func() {
+		if err := ft.Close(); err != nil {
+			t.Errorf("close shell: %v", err)
+		}
+	})
+	firstCtx := &gatedDeadlineContext{
+		Context: testCtx,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(firstCtx.release) })
+	defer release()
+	firstDone := make(chan error, 1)
+	go func() {
+		result, err := ft.Run(firstCtx, "AF_CANCEL_CONTROL=preserved")
+		if err == nil && result.ExitCode != 0 {
+			err = fmt.Errorf("first command: result=%+v", result)
+		}
+		firstDone <- err
+	}()
+	select {
+	case <-firstCtx.entered:
+	case err := <-firstDone:
+		t.Fatalf("first Run returned before reaching timeout setup: %v", err)
+	case <-testCtx.Done():
+		t.Fatal("first Run did not reach timeout setup")
+	}
+
+	ctx, cancel := context.WithCancel(testCtx)
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := ft.Run(ctx, "printf executed > canceled-command")
+		secondDone <- err
+	}()
+
+	// A start channel would not prove that Run reached the lock, and synctest
+	// does not treat mutex waits as durably blocked. Use structured stack frames
+	// to observe the second call in Mutex.Lock before canceling it.
+	var stacks []runtime.StackRecord
+	for {
+		if err := testCtx.Err(); err != nil {
+			t.Fatal("second Run did not block on the session lock")
+		}
+		waiting := false
+		n, ok := runtime.GoroutineProfile(stacks)
+		if !ok {
+			stacks = make([]runtime.StackRecord, n+16)
+			continue
+		}
+		for _, stack := range stacks[:n] {
+			frames := runtime.CallersFrames(stack.Stack())
+			var inTest, inSession, inLock bool
+			for {
+				frame, more := frames.Next()
+				inTest = inTest || strings.Contains(frame.Function, t.Name()+".func")
+				inSession = inSession || strings.HasSuffix(frame.Function, "shelltool.(*persistentSession).run")
+				inLock = inLock || frame.Function == "sync.(*Mutex).Lock"
+				if !more {
+					break
+				}
+			}
+			waiting = waiting || (inTest && inSession && inLock)
+		}
+		if waiting {
+			break
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	release()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first Run: %v", err)
+		}
+	case <-testCtx.Done():
+		t.Fatal("first Run did not finish")
+	}
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("second Run error = %v, want context.Canceled", err)
+		}
+	case <-testCtx.Done():
+		t.Fatal("second Run did not finish")
+	}
+
+	// Drain any incorrectly submitted script before checking its side effect.
+	result, err := ft.Run(testCtx, "printf 'next:%s' \"$AF_CANCEL_CONTROL\"")
+	if err != nil || result.ExitCode != 0 || result.Stdout != "next:preserved" {
+		t.Errorf("follow-up: result=%+v, err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "canceled-command")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("canceled command must not create a file; stat error = %v", err)
+	}
+}
+
 func TestCall_echo_defaultPersistent(t *testing.T) {
 	skipIfNotPOSIX(t)
 	t.Parallel()
