@@ -1164,6 +1164,62 @@ func TestNewLocal_initializePersistent(t *testing.T) {
 	}
 }
 
+func TestRun_persistentCanceledBeforeCall(t *testing.T) {
+	skipIfNotPOSIX(t)
+	t.Parallel()
+
+	for _, warm := range []bool{false, true} {
+		for _, expired := range []bool{false, true} {
+			t.Run(fmt.Sprintf("warm=%t/expired=%t", warm, expired), func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				ft := newLocal(t, shelltool.LocalConfig{
+					Shell:            "/bin/sh",
+					WorkingDirectory: dir,
+					Environment:      map[string]*string{"AF_CANCEL_CONTROL": nil},
+					Timeout:          new(5 * time.Second),
+				})
+				t.Cleanup(func() {
+					if err := ft.Close(); err != nil {
+						t.Errorf("close shell: %v", err)
+					}
+				})
+				if warm {
+					result, err := ft.Run(t.Context(), "AF_CANCEL_CONTROL=preserved")
+					if err != nil || result.ExitCode != 0 {
+						t.Fatalf("warm-up: result=%+v, err=%v", result, err)
+					}
+				}
+
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				if expired {
+					ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+					defer cancel()
+				}
+				_, err := ft.Run(ctx, "printf executed > canceled-command")
+				if !errors.Is(err, ctx.Err()) {
+					t.Errorf("Run error = %v, want %v", err, ctx.Err())
+				}
+
+				// A subsequent command is a completion barrier for any script
+				// incorrectly submitted to the persistent shell by the canceled call.
+				result, err := ft.Run(t.Context(), "printf 'next:%s' \"$AF_CANCEL_CONTROL\"")
+				want := "next:"
+				if warm {
+					want += "preserved"
+				}
+				if err != nil || result.ExitCode != 0 || result.Stdout != want {
+					t.Errorf("follow-up: result=%+v, err=%v, want stdout %q", result, err, want)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "canceled-command")); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("canceled command must not create a file; stat error = %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestCall_echo_defaultPersistent(t *testing.T) {
 	skipIfNotPOSIX(t)
 	t.Parallel()
