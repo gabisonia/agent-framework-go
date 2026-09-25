@@ -147,6 +147,39 @@ func TestTruncationStrategy_ExcludesOldestGroups(t *testing.T) {
 	}
 }
 
+func TestTruncationStrategy_PreservesRawJSONBelowTokenLimit(t *testing.T) {
+	const payload = `{"order_id":"ORD-1042","status":"shipped"}`
+	for _, tt := range []struct {
+		name   string
+		result any
+	}{
+		{name: "raw JSON", result: json.RawMessage(payload)},
+		{name: "string", result: payload},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []*message.Message{
+				textMessage(message.RoleUser, "lookup"),
+				functionCallMessage("call-1", "lookup_order"),
+				functionResultMessage("call-1", tt.result),
+			}
+			index := compaction.CreateMessageIndex(messages, nil)
+			if got, want := index.TotalByteCount(), 72; got != want {
+				t.Errorf("TotalByteCount = %d, want %d", got, want)
+			}
+			strategy := &compaction.TruncationStrategy{
+				Trigger:                compaction.TokensExceed(25),
+				MinimumPreservedGroups: new(1),
+			}
+			if compacted, err := strategy.Compact(t.Context(), index); err != nil || compacted {
+				t.Fatalf("Compact = %t, %v; want no compaction below the token limit", compacted, err)
+			}
+			if got, want := len(index.IncludedMessages()), len(messages); got != want {
+				t.Errorf("retained %d messages, want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestTruncationStrategy_SkipsPreExcludedAndSystemGroups(t *testing.T) {
 	index := compaction.CreateMessageIndex([]*message.Message{
 		textMessage(message.RoleSystem, "system"),
