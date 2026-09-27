@@ -206,7 +206,12 @@ func run(cfg Config, next agent.RunFunc, ctx context.Context, messages []*messag
 			messagesToSend := currentMessages
 			activeSession, _ := agent.GetOption(currentOpts, agent.WithSession)
 			if retainHistory && (activeSession.ServiceID() == "" || serviceDoesNotManageHistory) {
-				messagesToSend = append(slices.Clone(historyMessages), currentMessages...)
+				messagesToSend = make([]*message.Message, 0, len(historyMessages)+len(currentMessages))
+				source := message.Source{Type: agent.SourceTypeHistoryProvider, ID: "loop"}
+				for _, msg := range historyMessages {
+					messagesToSend = append(messagesToSend, msg.WithSource(source))
+				}
+				messagesToSend = append(messagesToSend, currentMessages...)
 			}
 			for update, err := range next(ctx, messagesToSend, currentOpts...) {
 				if update != nil {

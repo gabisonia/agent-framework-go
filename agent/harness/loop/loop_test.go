@@ -146,6 +146,74 @@ func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 	}
 }
 
+func TestLoop_ContextProviderDoesNotStoreReplayedHistory(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run("stream="+strconv.FormatBool(stream), func(t *testing.T) {
+			source := message.Source{ID: "caller"}
+			prompt := message.NewText("first request").WithSource(source)
+			feedback := message.NewText("make it shorter").WithSource(source)
+			var provided, storedRequests, storedResponses []string
+			contextProvider := agent.NewContextProvider(agent.ContextProviderConfig{
+				SourceID: "memory",
+				Provide: func(_ context.Context, ctx agent.InvokingContext) ([]*message.Message, []agent.Option, error) {
+					provided = append(provided, messageTexts(ctx.Messages)...)
+					return nil, nil, nil
+				},
+				Store: func(_ context.Context, ctx agent.InvokedContext) error {
+					storedRequests = append(storedRequests, messageTexts(ctx.RequestMessages)...)
+					storedResponses = append(storedResponses, messageTexts(ctx.ResponseMessages)...)
+					return nil
+				},
+			})
+			capture := newCaptureAgent(func(call int, _ []*message.Message) []*agent.ResponseUpdate {
+				return textUpdates("draft " + strconv.Itoa(call))
+			})
+			a := agent.New(capture.provider(), agent.Config{
+				ContextProviders: []agent.ContextProvider{contextProvider},
+				Middlewares: []agent.Middleware{loop.New(loop.Config{
+					Evaluators: []loop.Evaluator{loop.EvaluatorFunc(func(_ context.Context, ctx *loop.Context) (loop.Evaluation, error) {
+						if ctx.Iteration == 1 {
+							return loop.ContinueWithMessages([]*message.Message{feedback}), nil
+						}
+						return loop.Stop(), nil
+					})},
+				})},
+			})
+			resp, err := a.Run(t.Context(), []*message.Message{prompt}, agent.Stream(stream)).Collect()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRequests := []string{"first request", "make it shorter"}
+			if !slices.Equal(provided, wantRequests) {
+				t.Errorf("context retrieval inputs = %v, want %v", provided, wantRequests)
+			}
+			if !slices.Equal(storedRequests, wantRequests) {
+				t.Errorf("stored requests = %v, want %v", storedRequests, wantRequests)
+			}
+			if want := []string{"draft 1", "draft 2"}; !slices.Equal(storedResponses, want) {
+				t.Errorf("stored responses = %v, want %v", storedResponses, want)
+			}
+			if len(capture.messagesPerCall) != 2 {
+				t.Fatalf("provider calls = %d, want 2", len(capture.messagesPerCall))
+			}
+			if got, want := messageTexts(capture.messagesPerCall[1]), []string{"first request", "draft 1", "make it shorter"}; !slices.Equal(got, want) {
+				t.Errorf("second input = %v, want %v", got, want)
+			}
+			if prompt.Source != source || feedback.Source != source {
+				t.Error("caller message sources changed")
+			}
+			for _, msg := range resp.Messages {
+				if msg.Role != message.RoleAssistant {
+					continue
+				}
+				if msg.Source != (message.Source{}) {
+					t.Errorf("source of %q = %v, want unchanged external source", msg.String(), msg.Source)
+				}
+			}
+		})
+	}
+}
+
 func TestLoop_AutoApprovalPreservesHistoryWithoutDuplicatingInput(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
