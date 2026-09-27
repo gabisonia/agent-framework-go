@@ -17,6 +17,13 @@ type Wrapper func(tool.FuncTool) tool.FuncTool
 // MAFValue implements agent.Option without depending on the agent package.
 func (w Wrapper) MAFValue() any { return w }
 
+// ServiceDoesNotManageHistory tells tool execution that a provider requires
+// full conversation history even when its session has a service ID.
+type ServiceDoesNotManageHistory bool
+
+// MAFValue implements agent.Option without depending on the agent package.
+func (v ServiceDoesNotManageHistory) MAFValue() any { return bool(v) }
+
 type callIDKey struct{}
 
 // WithCallID associates the current tool invocation's call ID with ctx.

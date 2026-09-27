@@ -129,6 +129,9 @@ func New(prov ProviderConfig, cfg Config) *Agent {
 	}
 
 	cfg.RunOptions = slices.Clone(cfg.RunOptions)
+	if prov.ServiceDoesNotManageHistory {
+		cfg.RunOptions = append(cfg.RunOptions, toolmiddleware.ServiceDoesNotManageHistory(true))
+	}
 	functionMiddlewares := slices.DeleteFunc(slices.Clone(cfg.FunctionMiddlewares), func(mf FunctionInvocationMiddleware) bool { return mf == nil })
 	if len(functionMiddlewares) > 0 {
 		cfg.RunOptions = append(cfg.RunOptions, toolmiddleware.Wrapper(func(fn tool.FuncTool) tool.FuncTool {

@@ -1479,10 +1479,7 @@ func TestFunctionInvoking_MixedApprovalRequiredToolsWithNonApprovalRequiringFunc
 		Responses: agenttest.NewResponseBuilder(expectedMessages(t, input[0])).
 			AddFunctionCall("callId2", "Func2", `{"i":42}`).
 			NewTurn(expectedMessages(t,
-				input[0],
-				&message.Message{Role: message.RoleAssistant, Contents: []message.Content{
-					&message.FunctionCallContent{CallID: "callId2", Name: "Func2", Arguments: `{"i":42}`},
-				}},
+				// The helper uses service-managed history, so only new results are sent.
 				&message.Message{Role: message.RoleTool, Contents: []message.Content{
 					&message.FunctionResultContent{CallID: "callId2", Result: "Result 2: 42"},
 				}},
@@ -1633,11 +1630,7 @@ func TestFunctionInvoking_FunctionCallContentIsYieldedImmediatelyIfNoApprovalReq
 			AddFunctionCall("callId1", "Func1", "").
 			AddFunctionCall("callId2", "Func2", `{"i":42}`).
 			NewTurn(expectedMessages(t,
-				input[0],
-				&message.Message{Role: message.RoleAssistant, Contents: []message.Content{
-					&message.FunctionCallContent{CallID: "callId1", Name: "Func1"},
-					&message.FunctionCallContent{CallID: "callId2", Name: "Func2", Arguments: `{"i":42}`},
-				}},
+				// The helper uses service-managed history, so only new results are sent.
 				&message.Message{Role: message.RoleTool, Contents: []message.Content{
 					&message.FunctionResultContent{CallID: "callId1", Result: "Result 1"},
 					&message.FunctionResultContent{CallID: "callId2", Result: "Result 2: 42"},

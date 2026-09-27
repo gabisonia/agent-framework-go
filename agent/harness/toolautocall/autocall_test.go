@@ -40,6 +40,70 @@ func (schemaOnlyTool) ReturnSchema() any {
 	return nil
 }
 
+func TestFunctionInvoking_ServiceManagedHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		initialServiceID            string
+		responseServiceIDs          [2]string
+		serviceDoesNotManageHistory bool
+		wantMessageCounts           [2]int
+	}{
+		{name: "client managed", wantMessageCounts: [2]int{3, 5}},
+		{name: "new service session", responseServiceIDs: [2]string{"resp_1", "resp_2"}, wantMessageCounts: [2]int{1, 1}},
+		{name: "existing service session", initialServiceID: "conv_1", responseServiceIDs: [2]string{"conv_1", "conv_1"}, wantMessageCounts: [2]int{1, 1}},
+		{name: "client managed with service ID", responseServiceIDs: [2]string{"thread_1", "thread_1"}, serviceDoesNotManageHistory: true, wantMessageCounts: [2]int{3, 5}},
+		{name: "returns to client managed", responseServiceIDs: [2]string{"resp_1", ""}, wantMessageCounts: [2]int{1, 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &agent.Session{}
+			session.SetServiceID(tc.initialServiceID)
+			var calls int
+			run := func(_ context.Context, messages []*message.Message, _ ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+				return func(yield func(*agent.ResponseUpdate, error) bool) {
+					if calls > 0 {
+						if got, want := len(messages), tc.wantMessageCounts[calls-1]; got != want {
+							t.Fatalf("provider call %d: got %d messages, want %d", calls+1, got, want)
+						}
+						last := messages[len(messages)-1]
+						want := &message.Message{Role: message.RoleTool, Contents: message.Contents{
+							&message.FunctionResultContent{CallID: fmt.Sprintf("call_%d", calls), Result: "found"},
+						}}
+						if err := messagetest.MessageEqual(last, want); err != nil {
+							t.Fatal(err)
+						}
+						if len(messages) > 1 && messages[0].String() != "lookup order" {
+							t.Fatal("client-managed history lost the original user message")
+						}
+					}
+					calls++
+					if calls == 3 {
+						yield(&agent.ResponseUpdate{Role: message.RoleAssistant, Contents: message.Contents{&message.TextContent{Text: "done"}}}, nil)
+						return
+					}
+					if !yield(&agent.ResponseUpdate{Role: message.RoleAssistant, Contents: message.Contents{
+						&message.FunctionCallContent{CallID: fmt.Sprintf("call_%d", calls), Name: "lookup", Arguments: `{}`},
+					}}, nil) {
+						return
+					}
+					session.SetServiceID(tc.responseServiceIDs[calls-1])
+				}
+			}
+			a := agent.New(agent.ProviderConfig{
+				Run: run, ServiceDoesNotManageHistory: tc.serviceDoesNotManageHistory,
+				Middlewares: []agent.Middleware{toolautocall.New(toolautocall.Config{NewID: func() string { return "" }})},
+			}, agent.Config{Tools: []tool.Tool{functool.MustNew(functool.Config{Name: "lookup"},
+				func(context.Context, struct{}) (string, error) { return "found", nil })}})
+			response, err := a.RunText(t.Context(), "lookup order", agent.WithSession(session)).Collect()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 3 || response.String() != "done" {
+				t.Fatalf("provider calls = %d, response = %q", calls, response.String())
+			}
+		})
+	}
+}
+
 func TestFunctionInvoking_InvocationIdentity(t *testing.T) {
 	toolFailure := errors.New("tool failed")
 	for _, tc := range []struct {

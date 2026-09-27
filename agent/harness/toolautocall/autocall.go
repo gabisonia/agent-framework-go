@@ -188,6 +188,12 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 		session, _ := agent.GetOption(opts, agent.WithSession)
 		serviceID, _ := agent.GetOption(opts, agent.WithServiceID)
 		serviceManagedHistory := serviceID != "" || session.ServiceID() != ""
+		var serviceDoesNotManageHistory bool
+		for _, opt := range opts {
+			if v, ok := opt.(toolmiddleware.ServiceDoesNotManageHistory); ok {
+				serviceDoesNotManageHistory = bool(v)
+			}
+		}
 		yieldUpdate := func(update *agent.ResponseUpdate) bool {
 			if !f.disableApprovalResponseBinding && update != nil {
 				if err := recordPendingApprovalRequests(session, update.Contents); err != nil {
@@ -272,6 +278,7 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 		// and we can now enter the main function calling loop.
 		var updates []*agent.ResponseUpdate
 		var functionCallContents []*message.FunctionCallContent
+		messagesToSend := messages
 		for i := 0; ; i++ {
 			if err := ctx.Err(); err != nil {
 				yield(nil, err)
@@ -288,7 +295,7 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 			functionCallContents = functionCallContents[:0]
 			var hasApprovalRequiringFcc bool
 			var lastApprovalCheckedFCCIdx, lastYieldedUpdateIdx int
-			for update, err := range next(ctx, messages, opts...) {
+			for update, err := range next(ctx, messagesToSend, opts...) {
 				if err != nil {
 					yield(nil, err)
 					return
@@ -424,10 +431,8 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 				}
 			}
 
-			// Use the augmented history as the new set of messages to send.
-			// We include the original messages, the assistant message with function calls,
-			// and the tool results so that the downstream provider receives a well-formed
-			// conversation (user message → assistant tool_calls → tool results).
+			// Keep the full exchange for providers that rely on client-managed history,
+			// including one that stops managing history during this run.
 			opts = updateOptionsForNextIteration(opts)
 			if !messagesCloned {
 				messages = slices.Clone(messages)
@@ -437,6 +442,14 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 				Role:     message.RoleAssistant,
 				Contents: assistantContents,
 			}, newMsg)
+			messagesToSend = messages
+			if !serviceDoesNotManageHistory && (session.ServiceID() != "" || session == nil && serviceID != "") {
+				// Read the service ID after the provider finishes: a fresh session
+				// may acquire its ID during the first call. Send only new results
+				// while the service holds history, retaining the full exchange in
+				// case a later call returns to client-managed history.
+				messagesToSend = []*message.Message{newMsg}
+			}
 		}
 	}
 }
