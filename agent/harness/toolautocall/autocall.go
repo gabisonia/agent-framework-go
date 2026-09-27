@@ -187,13 +187,13 @@ func (f *autocall) Run(next agent.RunFunc, ctx context.Context, messages []*mess
 		var messagesCloned bool
 		session, _ := agent.GetOption(opts, agent.WithSession)
 		serviceID, _ := agent.GetOption(opts, agent.WithServiceID)
-		serviceManagedHistory := serviceID != "" || session.ServiceID() != ""
 		var serviceDoesNotManageHistory bool
 		for _, opt := range opts {
 			if v, ok := opt.(toolmiddleware.ServiceDoesNotManageHistory); ok {
 				serviceDoesNotManageHistory = bool(v)
 			}
 		}
+		serviceManagedHistory := !serviceDoesNotManageHistory && (serviceID != "" || session.ServiceID() != "")
 		yieldUpdate := func(update *agent.ResponseUpdate) bool {
 			if !f.disableApprovalResponseBinding && update != nil {
 				if err := recordPendingApprovalRequests(session, update.Contents); err != nil {
