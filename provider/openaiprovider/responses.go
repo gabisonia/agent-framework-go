@@ -21,6 +21,7 @@ import (
 	"github.com/microsoft/agent-framework-go/agent"
 	"github.com/microsoft/agent-framework-go/agent/format/jsonformat"
 	"github.com/microsoft/agent-framework-go/agent/harness/toolautocall"
+	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
 	"github.com/microsoft/agent-framework-go/tool/hostedtool"
@@ -52,7 +53,12 @@ func NewResponsesAgent(oclient openai.Client, config AgentConfig) *agent.Agent {
 	if config.ToolAutoCall != nil {
 		autoCall = *config.ToolAutoCall
 	}
-	providerMiddlewares := []agent.Middleware{toolautocall.New(autoCall)}
+	toolCalls := toolautocall.New(autoCall)
+	providerMiddlewares := []agent.Middleware{agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+		// An existing response ID does not mean this run's output will be stored.
+		opts = append(slices.Clone(opts), toolmiddleware.ServiceDoesNotManageHistory(responsesDisableStoreOutput(config, opts)))
+		return toolCalls.Run(next, ctx, messages, opts...)
+	})}
 	return agent.New(
 		agent.ProviderConfig{
 			ProviderName: cmp.Or(config.ProviderName, "openai"),

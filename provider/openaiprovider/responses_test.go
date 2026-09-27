@@ -6435,6 +6435,73 @@ func TestResponsesConversationId_AsResponseId_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestResponsesToolCallsWithExistingSessionHonorStore(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		disableStore bool
+		store        *bool
+		wantStored   bool
+	}{
+		{name: "disabled in config", disableStore: true},
+		{name: "disabled per run", store: new(false)},
+		{name: "enabled per run overrides config", disableStore: true, store: new(true), wantStored: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan []byte, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				requests <- body
+				w.Header().Set("Content-Type", "application/json")
+				if len(requests) == 1 {
+					_, _ = io.WriteString(w, `{"id":"resp_call","object":"response","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{}"}]}`)
+				} else {
+					_, _ = io.WriteString(w, `{"id":"resp_done","object":"response","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+				}
+			}))
+			defer server.Close()
+			a := openaiprovider.NewResponsesAgent(openai.NewClient(option.WithBaseURL(server.URL)), openaiprovider.AgentConfig{
+				Model: "test-model", DisableStoreOutput: tc.disableStore,
+				Config: agent.Config{Tools: []tool.Tool{functool.MustNew(functool.Config{Name: "lookup"},
+					func(context.Context, struct{}) (string, error) { return "found", nil })}},
+			})
+			session, err := a.CreateSession(t.Context(), agent.WithServiceID("resp_old"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := []agent.Option{agent.WithSession(session)}
+			if tc.store != nil {
+				opts = append(opts, openaiprovider.ResponsesNewParams(responses.ResponseNewParams{Store: openai.Bool(*tc.store)}))
+			}
+			response, err := a.RunText(t.Context(), "lookup order", opts...).Collect()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.String() != "done" || len(requests) != 2 {
+				t.Fatalf("response = %q, requests = %d", response.String(), len(requests))
+			}
+			<-requests
+			var followup struct {
+				Input              json.RawMessage `json:"input"`
+				PreviousResponseID string          `json:"previous_response_id"`
+				Store              bool            `json:"store"`
+			}
+			if err := json.Unmarshal(<-requests, &followup); err != nil {
+				t.Fatal(err)
+			}
+			wantInput := `[{"type":"message","role":"user","content":[{"type":"input_text","text":"lookup order"}]},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"found"}]`
+			wantPrevious, wantSession := "resp_old", "resp_old"
+			if tc.wantStored {
+				wantInput = `[{"type":"function_call_output","call_id":"call_1","output":"found"}]`
+				wantPrevious, wantSession = "resp_call", "resp_done"
+			}
+			responsesBodyEqual(t, string(followup.Input), wantInput)
+			if followup.PreviousResponseID != wantPrevious || followup.Store != tc.wantStored || session.ServiceID() != wantSession {
+				t.Fatalf("previous_response_id = %q, store = %t, session ID = %q", followup.PreviousResponseID, followup.Store, session.ServiceID())
+			}
+		})
+	}
+}
+
 func TestDisableStoreOutputDoesNotUseOrUpdateResponseID(t *testing.T) {
 	const input = `
 						{
