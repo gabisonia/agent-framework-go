@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/agent-framework-go/agent"
+	"github.com/microsoft/agent-framework-go/internal/agentopts"
 	"github.com/microsoft/agent-framework-go/message"
 )
 
@@ -172,7 +173,10 @@ func run(cfg Config, next agent.RunFunc, ctx context.Context, messages []*messag
 
 		initialMessages := cloneMessages(messages)
 		currentMessages := cloneMessages(messages)
-		currentOpts := slices.Clone(opts)
+		// The loop reuses its session across invocations, so even an automatically
+		// created session needs history for the next iteration.
+		opts = append(slices.Clone(opts), agentopts.NoSessionProvided(false))
+		currentOpts := opts
 		stream, _ := agent.GetOption(opts, agent.Stream)
 		returnLastResponseOnly := cfg.NonStreamingReturnsLastResponseOnly && !stream
 		initialSession, hasSession := agent.GetOption(opts, agent.WithSession)

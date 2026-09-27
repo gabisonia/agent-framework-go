@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	"github.com/microsoft/agent-framework-go/internal/agentopts"
 	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
@@ -516,8 +517,8 @@ func (a *Agent) historyProviderForSession(session *Session, noSession bool) Hist
 		return a.historyProvider
 	}
 
-	// The default in-memory provider only owns caller-provided local sessions.
-	// Auto-created sessions are per-run and cannot preserve history across calls;
+	// The default in-memory provider owns caller-provided and middleware-owned local sessions.
+	// Other auto-created sessions are per-run and cannot preserve history across calls;
 	// service-managed sessions use the provider service as the source of history.
 	// Providers that never manage history server-side (e.g. AGUI) set
 	// providerDoesNotManageHistory so the in-memory provider is kept regardless.
@@ -614,12 +615,8 @@ func (a *Agent) prepareRun(ctx context.Context, messages []*message.Message, opt
 
 type agentKey struct{}
 
-type noSessionOpt bool
-
-func (o noSessionOpt) MAFValue() any { return bool(o) }
-
 func noSessionProvided(v bool) Option {
-	return noSessionOpt(v)
+	return agentopts.NoSessionProvided(v)
 }
 
 // AgentFromContext retrieves the agent that initiated the run from the context.

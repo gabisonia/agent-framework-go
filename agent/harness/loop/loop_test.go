@@ -71,8 +71,55 @@ func TestLoop_ContinuesUntilEvaluatorStops(t *testing.T) {
 	if got := capture.messagesPerCall[0][0].String(); got != "go" {
 		t.Fatalf("first call input = %q, want %q", got, "go")
 	}
-	if got := capture.messagesPerCall[1][0].String(); got != "custom follow-up" {
-		t.Fatalf("second call input = %q, want %q", got, "custom follow-up")
+	if got, want := messageTexts(capture.messagesPerCall[1]), []string{"go", "iteration 1", "custom follow-up"}; !slices.Equal(got, want) {
+		t.Fatalf("second call input = %v, want %v", got, want)
+	}
+}
+
+func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		stream    bool
+		serviceID string
+	}{
+		{name: "local history"},
+		{name: "streaming local history", stream: true},
+		{name: "service history", serviceID: "conversation-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := newCaptureAgent(func(int, []*message.Message) []*agent.ResponseUpdate {
+				return textUpdates("draft")
+			})
+			a := agent.New(capture.provider(), agent.Config{
+				Middlewares: []agent.Middleware{loop.New(loop.Config{
+					Evaluators: []loop.Evaluator{loop.EvaluatorFunc(func(_ context.Context, ctx *loop.Context) (loop.Evaluation, error) {
+						if ctx.Iteration == 1 {
+							return loop.Continue("make it shorter"), nil
+						}
+						return loop.Stop(), nil
+					})},
+				})},
+			})
+			for _, prompt := range []string{"first request", "independent request"} {
+				capture.messagesPerCall = nil
+				if _, err := a.RunText(t.Context(), prompt, agent.Stream(tc.stream), agent.WithServiceID(tc.serviceID)).Collect(); err != nil {
+					t.Fatal(err)
+				}
+				if len(capture.messagesPerCall) != 2 {
+					t.Fatalf("provider calls = %d, want 2", len(capture.messagesPerCall))
+				}
+				if got := messageTexts(capture.messagesPerCall[0]); !slices.Equal(got, []string{prompt}) {
+					t.Fatalf("first input = %v, want [%s]", got, prompt)
+				}
+				want := []string{prompt, "draft", "make it shorter"}
+				if tc.serviceID != "" {
+					want = []string{"make it shorter"}
+				}
+				if got := messageTexts(capture.messagesPerCall[1]); !slices.Equal(got, want) {
+					t.Fatalf("second input = %v, want %v", got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -111,11 +158,11 @@ func TestLoop_MultipleEvaluators_FirstContinueWins(t *testing.T) {
 	if secondCalls != 1 {
 		t.Fatalf("secondCalls = %d, want 1", secondCalls)
 	}
-	if got := capture.messagesPerCall[1][0].String(); got != "from first" {
-		t.Fatalf("second call input = %q, want from first", got)
+	if got, want := messageTexts(capture.messagesPerCall[1]), []string{"go", "iteration 1", "from first"}; !slices.Equal(got, want) {
+		t.Fatalf("second call input = %v, want %v", got, want)
 	}
-	if got := capture.messagesPerCall[2][0].String(); got != "from second" {
-		t.Fatalf("third call input = %q, want from second", got)
+	if got, want := messageTexts(capture.messagesPerCall[2]), []string{"go", "iteration 1", "from first", "iteration 2", "from second"}; !slices.Equal(got, want) {
+		t.Fatalf("third call input = %v, want %v", got, want)
 	}
 }
 
@@ -162,11 +209,11 @@ func TestLoop_ContinueWithMessagesSendsMessagesVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := capture.messagesPerCall[1][0].Role; got != message.RoleSystem {
-		t.Fatalf("role = %q, want %q", got, message.RoleSystem)
+	if got, want := messageTexts(capture.messagesPerCall[1]), []string{"go", "ack", "explicit"}; !slices.Equal(got, want) {
+		t.Fatalf("second call input = %v, want %v", got, want)
 	}
-	if got := capture.messagesPerCall[1][0].String(); got != "explicit" {
-		t.Fatalf("message = %q, want explicit", got)
+	if got := capture.messagesPerCall[1][2].Role; got != message.RoleSystem {
+		t.Fatalf("role = %q, want %q", got, message.RoleSystem)
 	}
 }
 
