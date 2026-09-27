@@ -85,12 +85,14 @@ func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 		name                        string
 		stream                      bool
 		serviceID                   string
+		assignServiceID             bool
 		serviceDoesNotManageHistory bool
 		historyProvider             agent.HistoryProvider
 	}{
 		{name: "local history"},
 		{name: "streaming local history", stream: true},
 		{name: "service history", serviceID: "conversation-1"},
+		{name: "service history assigned during run", assignServiceID: true},
 		{name: "local history with service ID", serviceID: "thread-1", serviceDoesNotManageHistory: true},
 		{name: "configured history", historyProvider: agent.NewInMemoryHistoryProvider(agent.InMemoryHistoryProviderConfig{})},
 	} {
@@ -100,6 +102,16 @@ func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 			})
 			provider := capture.provider()
 			provider.ServiceDoesNotManageHistory = tc.serviceDoesNotManageHistory
+			if tc.assignServiceID {
+				run := provider.Run
+				provider.Run = func(ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
+					session, _ := agent.GetOption(opts, agent.WithSession)
+					if session.ServiceID() == "" {
+						session.SetServiceID("conversation-1")
+					}
+					return run(ctx, messages, opts...)
+				}
+			}
 			a := agent.New(provider, agent.Config{
 				HistoryProvider: tc.historyProvider,
 				Middlewares: []agent.Middleware{loop.New(loop.Config{
@@ -123,7 +135,7 @@ func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 					t.Fatalf("first input = %v, want [%s]", got, prompt)
 				}
 				want := []string{prompt, "draft", "make it shorter"}
-				if tc.serviceID != "" && !tc.serviceDoesNotManageHistory {
+				if (tc.serviceID != "" || tc.assignServiceID) && !tc.serviceDoesNotManageHistory {
 					want = []string{"make it shorter"}
 				}
 				if got := messageTexts(capture.messagesPerCall[1]); !slices.Equal(got, want) {
