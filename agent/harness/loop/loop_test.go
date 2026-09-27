@@ -14,7 +14,11 @@ import (
 
 	"github.com/microsoft/agent-framework-go/agent"
 	"github.com/microsoft/agent-framework-go/agent/harness/loop"
+	"github.com/microsoft/agent-framework-go/agent/harness/toolapproval"
+	"github.com/microsoft/agent-framework-go/agent/harness/toolautocall"
 	"github.com/microsoft/agent-framework-go/message"
+	"github.com/microsoft/agent-framework-go/tool"
+	"github.com/microsoft/agent-framework-go/tool/functool"
 )
 
 func TestLoop_StopsImmediately_InvokesOnce(t *testing.T) {
@@ -78,19 +82,26 @@ func TestLoop_ContinuesUntilEvaluatorStops(t *testing.T) {
 
 func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		stream    bool
-		serviceID string
+		name                        string
+		stream                      bool
+		serviceID                   string
+		serviceDoesNotManageHistory bool
+		historyProvider             agent.HistoryProvider
 	}{
 		{name: "local history"},
 		{name: "streaming local history", stream: true},
 		{name: "service history", serviceID: "conversation-1"},
+		{name: "local history with service ID", serviceID: "thread-1", serviceDoesNotManageHistory: true},
+		{name: "configured history", historyProvider: agent.NewInMemoryHistoryProvider(agent.InMemoryHistoryProviderConfig{})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capture := newCaptureAgent(func(int, []*message.Message) []*agent.ResponseUpdate {
 				return textUpdates("draft")
 			})
-			a := agent.New(capture.provider(), agent.Config{
+			provider := capture.provider()
+			provider.ServiceDoesNotManageHistory = tc.serviceDoesNotManageHistory
+			a := agent.New(provider, agent.Config{
+				HistoryProvider: tc.historyProvider,
 				Middlewares: []agent.Middleware{loop.New(loop.Config{
 					Evaluators: []loop.Evaluator{loop.EvaluatorFunc(func(_ context.Context, ctx *loop.Context) (loop.Evaluation, error) {
 						if ctx.Iteration == 1 {
@@ -112,12 +123,83 @@ func TestLoop_DefaultHistoryWithoutExplicitSession(t *testing.T) {
 					t.Fatalf("first input = %v, want [%s]", got, prompt)
 				}
 				want := []string{prompt, "draft", "make it shorter"}
-				if tc.serviceID != "" {
+				if tc.serviceID != "" && !tc.serviceDoesNotManageHistory {
 					want = []string{"make it shorter"}
 				}
 				if got := messageTexts(capture.messagesPerCall[1]); !slices.Equal(got, want) {
 					t.Fatalf("second input = %v, want %v", got, want)
 				}
+			}
+		})
+	}
+}
+
+func TestLoop_AutoApprovalPreservesHistoryWithoutDuplicatingInput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream bool
+		cap    *int
+	}{
+		{name: "non-streaming"},
+		{name: "streaming", stream: true},
+		{name: "approval iteration cap", cap: new(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var toolCalls int
+			capture := newCaptureAgent(func(call int, _ []*message.Message) []*agent.ResponseUpdate {
+				if call == 1 {
+					return []*agent.ResponseUpdate{{Role: message.RoleAssistant, Contents: message.Contents{
+						&message.FunctionCallContent{CallID: "call-1", Name: "lookup", Arguments: `{}`},
+					}}}
+				}
+				return textUpdates("answer")
+			})
+			provider := capture.provider()
+			provider.Middlewares = []agent.Middleware{toolautocall.New(toolautocall.Config{})}
+			a := agent.New(provider, agent.Config{
+				Tools: []tool.Tool{tool.ApprovalRequiredFunc(functool.MustNew(functool.Config{Name: "lookup"}, func(context.Context, struct{}) (string, error) {
+					toolCalls++
+					return "found", nil
+				}))},
+				Middlewares: []agent.Middleware{
+					loop.New(loop.Config{Evaluators: []loop.Evaluator{loop.EvaluatorFunc(func(_ context.Context, ctx *loop.Context) (loop.Evaluation, error) {
+						if ctx.Iteration == 1 {
+							return loop.Continue("make it shorter"), nil
+						}
+						return loop.Stop(), nil
+					})}}),
+					toolapproval.New(toolapproval.Config{
+						MaxAutoApprovalIterations: tc.cap,
+						AutoApprovalRules: []toolapproval.AutoApprovalRule{func(context.Context, *toolapproval.ToolAutoApprovalRuleContext) (bool, error) {
+							return true, nil
+						}},
+					}),
+				},
+			})
+			if _, err := a.RunText(t.Context(), "lookup order 42", agent.Stream(tc.stream)).Collect(); err != nil {
+				t.Fatal(err)
+			}
+			if capture.callCount != 3 || toolCalls != 1 {
+				t.Fatalf("provider calls = %d, tool calls = %d, want 3 and 1", capture.callCount, toolCalls)
+			}
+			for i, messages := range capture.messagesPerCall {
+				var prompts, results int
+				for _, msg := range messages {
+					if msg.String() == "lookup order 42" {
+						prompts++
+					}
+					for _, content := range msg.Contents {
+						if result, ok := content.(*message.FunctionResultContent); ok && result.CallID == "call-1" && result.Result == "found" {
+							results++
+						}
+					}
+				}
+				if prompts != 1 || (i > 0 && results != 1) {
+					t.Errorf("provider call %d: prompt copies = %d, tool results = %d, want 1 each after approval", i+1, prompts, results)
+				}
+			}
+			if got := capture.messagesPerCall[2]; got[len(got)-1].String() != "make it shorter" {
+				t.Fatal("next loop iteration lost evaluator feedback")
 			}
 		})
 	}

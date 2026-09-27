@@ -517,8 +517,8 @@ func (a *Agent) historyProviderForSession(session *Session, noSession bool) Hist
 		return a.historyProvider
 	}
 
-	// The default in-memory provider owns caller-provided and middleware-owned local sessions.
-	// Other auto-created sessions are per-run and cannot preserve history across calls;
+	// The default in-memory provider only owns caller-provided local sessions.
+	// Auto-created sessions are per-run and cannot preserve history across calls;
 	// service-managed sessions use the provider service as the source of history.
 	// Providers that never manage history server-side (e.g. AGUI) set
 	// providerDoesNotManageHistory so the in-memory provider is kept regardless.
@@ -596,6 +596,9 @@ func (a *Agent) prepareRun(ctx context.Context, messages []*message.Message, opt
 			options = cloned
 		}
 		options = append(options, WithSession(session), noSessionProvided(true))
+		if a.hasDefaultHistoryProvider {
+			options = append(options, agentopts.SessionlessHistory{ServiceDoesNotManageHistory: a.providerDoesNotManageHistory})
+		}
 	}
 
 	continuationToken, _ := GetOption(options, WithContinuationToken)
@@ -615,8 +618,12 @@ func (a *Agent) prepareRun(ctx context.Context, messages []*message.Message, opt
 
 type agentKey struct{}
 
+type noSessionOpt bool
+
+func (o noSessionOpt) MAFValue() any { return bool(o) }
+
 func noSessionProvided(v bool) Option {
-	return agentopts.NoSessionProvided(v)
+	return noSessionOpt(v)
 }
 
 // AgentFromContext retrieves the agent that initiated the run from the context.
