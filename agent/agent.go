@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	"github.com/microsoft/agent-framework-go/internal/agentopts"
 	"github.com/microsoft/agent-framework-go/internal/toolmiddleware"
 	"github.com/microsoft/agent-framework-go/message"
 	"github.com/microsoft/agent-framework-go/tool"
@@ -598,6 +599,9 @@ func (a *Agent) prepareRun(ctx context.Context, messages []*message.Message, opt
 			options = cloned
 		}
 		options = append(options, WithSession(session), noSessionProvided(true))
+		if a.hasDefaultHistoryProvider {
+			options = append(options, agentopts.SessionlessHistory{ServiceDoesNotManageHistory: a.providerDoesNotManageHistory})
+		}
 	}
 
 	continuationToken, _ := GetOption(options, WithContinuationToken)
