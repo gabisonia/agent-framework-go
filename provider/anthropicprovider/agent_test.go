@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,6 +30,52 @@ import (
 type testOutput struct {
 	Name string `json:"name"`
 	Age  int    `json:"age"`
+}
+
+func TestToolCallsWithExistingServiceIDRetainHistory(t *testing.T) {
+	requests := make(chan []byte, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			_, _ = io.WriteString(w, `{"id":"msg_call","type":"message","role":"assistant","model":"test-model","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`)
+		} else {
+			_, _ = io.WriteString(w, minimalMessageResponse("done"))
+		}
+	}))
+	defer server.Close()
+	a := anthropicprovider.NewAgent(anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(server.URL)), anthropicprovider.AgentConfig{Model: "test-model"})
+	fn := functool.MustNew(functool.Config{Name: "lookup"}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	response, err := a.RunText(t.Context(), "lookup order", agent.WithServiceID("existing-id"), agent.WithTool(fn)).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.String() != "done" || len(requests) != 2 {
+		t.Fatalf("response = %q, requests = %d", response.String(), len(requests))
+	}
+	<-requests
+	var followup struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(<-requests, &followup); err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"role":"user","content":[{"type":"text","text":"lookup order"}]},{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","is_error":false,"content":[{"type":"text","text":"found"}]}]}]`
+	var gotJSON, wantJSON any
+	if err := json.Unmarshal(followup.Messages, &gotJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotJSON, wantJSON) {
+		t.Errorf("follow-up = %s, want %s", followup.Messages, want)
+	}
 }
 
 func TestAgent_UnsupportedMessageRoleReturnsError(t *testing.T) {

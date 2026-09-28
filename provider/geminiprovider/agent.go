@@ -74,11 +74,12 @@ func NewAgent(gclient *genai.Client, config AgentConfig) *agent.Agent {
 	}
 	providerMiddlewares := []agent.Middleware{toolautocall.New(autoCall)}
 	return agent.New(agent.ProviderConfig{
-		Run:          c.run,
-		ProviderName: "gcp.gemini",
-		Middlewares:  providerMiddlewares,
-		Format:       c.formatOf,
-		Unmarshal:    c.unmarshal,
+		ServiceDoesNotManageHistory: true,
+		Run:                         c.run,
+		ProviderName:                "gcp.gemini",
+		Middlewares:                 providerMiddlewares,
+		Format:                      c.formatOf,
+		Unmarshal:                   c.unmarshal,
 	}, config.Config)
 }
 

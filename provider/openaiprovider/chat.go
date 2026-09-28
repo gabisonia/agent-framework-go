@@ -89,11 +89,12 @@ func NewChatCompletionsAgent(oclient openai.Client, config AgentConfig) *agent.A
 	}
 	providerMiddlewares := []agent.Middleware{toolautocall.New(autoCall)}
 	return agent.New(agent.ProviderConfig{
-		ProviderName: cmp.Or(config.ProviderName, "openai"),
-		Run:          c.run,
-		Middlewares:  providerMiddlewares,
-		Format:       c.formatOf,
-		Unmarshal:    c.unmarshal,
+		ServiceDoesNotManageHistory: true,
+		ProviderName:                cmp.Or(config.ProviderName, "openai"),
+		Run:                         c.run,
+		Middlewares:                 providerMiddlewares,
+		Format:                      c.formatOf,
+		Unmarshal:                   c.unmarshal,
 	}, config.Config)
 }
 

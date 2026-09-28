@@ -27,6 +27,43 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+func TestChatToolCallsWithExistingServiceIDRetainHistory(t *testing.T) {
+	requests := make(chan []byte, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-tools","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		} else {
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-done","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+	a := openaiprovider.NewChatCompletionsAgent(openai.NewClient(option.WithAPIKey("test"), option.WithBaseURL(server.URL)), openaiprovider.AgentConfig{Model: "test-model"})
+	fn := functool.MustNew(functool.Config{Name: "lookup"}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	response, err := a.RunText(t.Context(), "lookup order", agent.WithServiceID("existing-id"), agent.WithTool(fn)).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.String() != "done" || len(requests) != 2 {
+		t.Fatalf("response = %q, requests = %d", response.String(), len(requests))
+	}
+	<-requests
+	var followup struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(<-requests, &followup); err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"role":"user","content":"lookup order"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"found"}]`
+	bodyEqual(t, string(followup.Messages), want)
+}
+
 func TestChatCompletionsAgent_FunctionInvocationMiddleware(t *testing.T) {
 	for _, source := range []string{"configured", "context provider", "additional"} {
 		for _, block := range []bool{false, true} {

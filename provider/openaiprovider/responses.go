@@ -56,7 +56,9 @@ func NewResponsesAgent(oclient openai.Client, config AgentConfig) *agent.Agent {
 	toolCalls := toolautocall.New(autoCall)
 	providerMiddlewares := []agent.Middleware{agent.MiddlewareFunc(func(next agent.RunFunc, ctx context.Context, messages []*message.Message, opts ...agent.Option) iter.Seq2[*agent.ResponseUpdate, error] {
 		// An existing response ID does not mean this run's output will be stored.
-		opts = append(slices.Clone(opts), toolmiddleware.ServiceDoesNotManageHistory(responsesDisableStoreOutput(config, opts)))
+		if responsesDisableStoreOutput(config, opts) {
+			opts = append(slices.Clone(opts), toolmiddleware.ServiceDoesNotManageHistory(true))
+		}
 		return toolCalls.Run(next, ctx, messages, opts...)
 	})}
 	return agent.New(

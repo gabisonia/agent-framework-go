@@ -6442,6 +6442,7 @@ func TestResponsesToolCallsWithExistingSessionHonorStore(t *testing.T) {
 		store        *bool
 		wantStored   bool
 	}{
+		{name: "stored by default", wantStored: true},
 		{name: "disabled in config", disableStore: true},
 		{name: "disabled per run", store: new(false)},
 		{name: "enabled per run overrides config", disableStore: true, store: new(true), wantStored: true},
@@ -6483,7 +6484,7 @@ func TestResponsesToolCallsWithExistingSessionHonorStore(t *testing.T) {
 			var followup struct {
 				Input              json.RawMessage `json:"input"`
 				PreviousResponseID string          `json:"previous_response_id"`
-				Store              bool            `json:"store"`
+				Store              *bool           `json:"store"`
 			}
 			if err := json.Unmarshal(<-requests, &followup); err != nil {
 				t.Fatal(err)
@@ -6495,8 +6496,9 @@ func TestResponsesToolCallsWithExistingSessionHonorStore(t *testing.T) {
 				wantPrevious, wantSession = "resp_call", "resp_done"
 			}
 			responsesBodyEqual(t, string(followup.Input), wantInput)
-			if followup.PreviousResponseID != wantPrevious || followup.Store != tc.wantStored || session.ServiceID() != wantSession {
-				t.Fatalf("previous_response_id = %q, store = %t, session ID = %q", followup.PreviousResponseID, followup.Store, session.ServiceID())
+			stored := followup.Store == nil || *followup.Store
+			if followup.PreviousResponseID != wantPrevious || stored != tc.wantStored || session.ServiceID() != wantSession {
+				t.Fatalf("previous_response_id = %q, stored = %t, session ID = %q", followup.PreviousResponseID, stored, session.ServiceID())
 			}
 		})
 	}

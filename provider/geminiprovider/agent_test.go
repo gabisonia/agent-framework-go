@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -29,6 +30,60 @@ const testModel = "gemini-test"
 type testOutput struct {
 	Name string `json:"name"`
 	Age  int    `json:"age"`
+}
+
+func TestToolCallsWithExistingServiceIDRetainHistory(t *testing.T) {
+	requests := make(chan []byte, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`)
+		} else {
+			_, _ = io.WriteString(w, minimalTextResponse("done"))
+		}
+	}))
+	defer server.Close()
+	client, err := genai.NewClient(t.Context(), &genai.ClientConfig{
+		Backend:     genai.BackendGeminiAPI,
+		APIKey:      "test",
+		HTTPOptions: genai.HTTPOptions{BaseURL: server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := geminiprovider.NewAgent(client, geminiprovider.AgentConfig{Model: testModel})
+	fn := functool.MustNew(functool.Config{Name: "lookup"}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	response, err := a.RunText(t.Context(), "lookup order", agent.WithServiceID("existing-id"), agent.WithTool(fn)).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.String() != "done" || len(requests) != 2 {
+		t.Fatalf("response = %q, requests = %d", response.String(), len(requests))
+	}
+	<-requests
+	var followup struct {
+		Contents json.RawMessage `json:"contents"`
+	}
+	if err := json.Unmarshal(<-requests, &followup); err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"role":"user","parts":[{"text":"lookup order"}]},{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup"}}]},{"role":"user","parts":[{"functionResponse":{"id":"call_1","name":"lookup","response":{"output":"found"}}}]}]`
+	var gotJSON, wantJSON any
+	if err := json.Unmarshal(followup.Contents, &gotJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotJSON, wantJSON) {
+		t.Errorf("follow-up = %s, want %s", followup.Contents, want)
+	}
 }
 
 func TestNewAgent_PanicsWithNilClient(t *testing.T) {
