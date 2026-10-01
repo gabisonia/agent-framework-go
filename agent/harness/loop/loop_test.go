@@ -715,6 +715,32 @@ func TestCompletionMarkerEvaluator_CustomTemplateSubstitutesLastResponse(t *test
 	}
 }
 
+func TestCompletionMarkerEvaluator_PreservesMarkerWhitespace(t *testing.T) {
+	evaluator := loop.NewCompletionMarkerEvaluator(loop.CompletionMarkerConfig{
+		Marker:                  "\nDONE\n",
+		FeedbackMessageTemplate: new("emit=<{completion_marker}>"),
+	})
+
+	cont, err := evaluator.Evaluate(context.Background(), contextWithResponse("NOT_DONE_YET"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cont.ShouldReinvoke {
+		t.Fatal("expected a response without the full marker to continue")
+	}
+	if want := "emit=<\nDONE\n>"; cont.Feedback != want {
+		t.Fatalf("feedback = %q, want %q", cont.Feedback, want)
+	}
+
+	stop, err := evaluator.Evaluate(context.Background(), contextWithResponse("finished\nDONE\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop.ShouldReinvoke {
+		t.Fatal("expected the full marker to stop the loop")
+	}
+}
+
 func TestCompletionMarkerEvaluator_EmptyMarkerPanics(t *testing.T) {
 	testCases := []loop.CompletionMarkerConfig{
 		{},
