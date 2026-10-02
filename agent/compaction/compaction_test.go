@@ -203,7 +203,9 @@ func TestTruncationStrategy_PreservesDataContentBelowTokenLimit(t *testing.T) {
 				textMessage(message.RoleUser, "Summarize it."),
 			}
 			index := compaction.CreateMessageIndex(messages, nil)
-			if got, want := index.TotalByteCount(), tt.size+41; got != want {
+			want := tt.size + len(data.MediaType) + len(data.Name)
+			want += len(messages[1].String()) + len(messages[2].String())
+			if got := index.TotalByteCount(); got != want {
 				t.Errorf("TotalByteCount = %d, want %d", got, want)
 			}
 			strategy := &compaction.TruncationStrategy{
