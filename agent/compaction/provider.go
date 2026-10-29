@@ -52,8 +52,8 @@ type contextProvider struct {
 // NewContextProvider creates a context provider that applies compaction before each agent run.
 //
 // When a local session is available, the provider stores message-group state so subsequent runs can
-// incrementally update the index. Without a session, it still performs stateless compaction over the
-// current message list. Service-managed sessions are skipped because the service owns history.
+// incrementally update the index. Without a session, messages and options are returned unchanged.
+// Use [Compact] for stateless compaction. Service-managed sessions are skipped because the service owns history.
 // Generated summaries are marked as history so the default history store filter skips them.
 // It panics if Strategy is nil or the resolved StateKey is blank.
 func NewContextProvider(cfg ContextProviderConfig) agent.ContextProvider {
@@ -87,11 +87,10 @@ func (p *contextProvider) Invoking(ctx context.Context, invoking agent.InvokingC
 		return messages, options, nil
 	}
 	if session == nil {
-		compactedMessages, err := Compact(ctx, p.strategy, messages, p.tokenCounter)
-		if err != nil {
-			return nil, nil, err
+		if p.logger != nil {
+			p.logger.DebugContext(ctx, "compaction provider skipped", slog.String("reason", "no session"))
 		}
-		return p.markGeneratedMessages(compactedMessages, messages), options, nil
+		return messages, options, nil
 	}
 	mu := p.locks.forOptions(options)
 	mu.Lock()

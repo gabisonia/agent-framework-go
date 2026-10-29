@@ -867,7 +867,7 @@ func TestNewProvider_SourceStampsGeneratedMessages(t *testing.T) {
 		SourceID: "compaction-test",
 	})
 
-	compactedMessages, _, err := invokeProvider(provider, t.Context(), turnMessages(3))
+	compactedMessages, _, err := invokeProvider(provider, t.Context(), turnMessages(3), agent.WithSession(agenttest.CreateSession()))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -935,7 +935,7 @@ func TestNewProvider_SourceStampingDoesNotMutateGeneratedMessage(t *testing.T) {
 	})
 
 	input := textMessage(message.RoleUser, "input")
-	compactedMessages, _, err := invokeProvider(provider, t.Context(), []*message.Message{input})
+	compactedMessages, _, err := invokeProvider(provider, t.Context(), []*message.Message{input}, agent.WithSession(agenttest.CreateSession()))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -950,20 +950,103 @@ func TestNewProvider_SourceStampingDoesNotMutateGeneratedMessage(t *testing.T) {
 	}
 }
 
-func TestNewProvider_CompactsWithoutSession(t *testing.T) {
+func TestNewProvider_RequiresSessionForCompaction(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		options       []agent.Option
+		wantCompacted bool
+	}{
+		{name: "omitted session"},
+		{name: "nil session", options: []agent.Option{agent.WithSession(nil)}},
+		{name: "local session", options: []agent.Option{agent.WithSession(agenttest.CreateSession())}, wantCompacted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			strategy := &compaction.TruncationStrategy{
+				Trigger:                compaction.GroupsExceed(2),
+				MinimumPreservedGroups: new(2),
+			}
+			called := false
+			provider := compaction.NewContextProvider(compaction.ContextProviderConfig{
+				Strategy: strategyFunc(func(ctx context.Context, index *compaction.MessageIndex) (bool, error) {
+					called = true
+					return strategy.Compact(ctx, index)
+				}),
+			})
+			messages := turnMessages(3)
+			options := append(tc.options, agent.WithInstructions("Be helpful"))
+			result, resultOptions, err := invokeProvider(provider, t.Context(), messages, options...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if called != tc.wantCompacted {
+				t.Errorf("strategy called = %v, want %v", called, tc.wantCompacted)
+			}
+			want := messages
+			if tc.wantCompacted {
+				want = messages[len(messages)-2:]
+			} else if len(result) == 0 || &result[0] != &messages[0] {
+				t.Error("expected the original message slice without a session")
+			}
+			if !slices.Equal(result, want) {
+				t.Errorf("messages = %v, want %v", messageTexts(result), messageTexts(want))
+			}
+			if len(resultOptions) != len(options) || &resultOptions[0] != &options[0] {
+				t.Error("expected the original options")
+			}
+		})
+	}
+}
+
+func TestNewProvider_MiddlewarePassesThroughWithoutSession(t *testing.T) {
 	provider := compaction.NewContextProvider(compaction.ContextProviderConfig{
 		Strategy: &compaction.TruncationStrategy{
-			Trigger:                compaction.GroupsExceed(2),
-			MinimumPreservedGroups: new(2),
+			Trigger: compaction.GroupsExceed(2), MinimumPreservedGroups: new(2),
 		},
 	})
-
-	compactedMessages, _, err := invokeProvider(provider, t.Context(), turnMessages(3))
+	messages := turnMessages(3)
+	options := []agent.Option{agent.WithInstructions("Be helpful")}
+	called := false
+	runner := &agenttest.Runner{Responses: agenttest.NewResponseBuilder(func(_ context.Context, got []*message.Message, opts ...agent.Option) {
+		called = true
+		if !slices.Equal(got, messages) || len(got) == 0 || &got[0] != &messages[0] {
+			t.Errorf("downstream messages = %v, want the original slice", messageTexts(got))
+		}
+		if len(opts) != len(options) || &opts[0] != &options[0] {
+			t.Error("downstream options changed")
+		}
+	}).AddText("done").Build()}
+	response, err := agent.ResponseStream(agent.ContextProviderMiddleware(provider).Run(runner.Run, t.Context(), messages, options...)).Collect()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if got, want := messageTexts(compactedMessages), []string{"u3", "a3"}; !slices.Equal(got, want) {
-		t.Fatalf("unexpected compacted messages: got %v want %v", got, want)
+	if !called || response.String() != "done" {
+		t.Fatal("expected the downstream response to pass through")
+	}
+}
+
+func TestNewProvider_AgentRunCompactsWithImplicitSession(t *testing.T) {
+	provider := compaction.NewContextProvider(compaction.ContextProviderConfig{
+		Strategy: &compaction.TruncationStrategy{
+			Trigger: compaction.GroupsExceed(2), MinimumPreservedGroups: new(2),
+		},
+	})
+	called := false
+	runner := &agenttest.Runner{Responses: agenttest.NewResponseBuilder(func(_ context.Context, got []*message.Message, opts ...agent.Option) {
+		called = true
+		if session, _ := agent.GetOption(opts, agent.WithSession); session == nil {
+			t.Error("expected Agent.Run to supply an implicit session")
+		}
+		if want := []string{"u3", "a3"}; !slices.Equal(messageTexts(got), want) {
+			t.Errorf("downstream messages = %v, want %v", messageTexts(got), want)
+		}
+	}).AddText("done").Build()}
+	a := agent.New(agent.ProviderConfig{Run: runner.Run}, agent.Config{ContextProviders: []agent.ContextProvider{provider}})
+	response, err := a.Run(t.Context(), turnMessages(3)).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called || response.String() != "done" {
+		t.Fatal("expected the downstream response to pass through")
 	}
 }
 
