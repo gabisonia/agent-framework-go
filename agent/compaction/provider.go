@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"reflect"
 	"strings"
 
 	"github.com/microsoft/agent-framework-go/agent"
@@ -25,7 +26,11 @@ type ContextProviderConfig struct {
 	SourceID string
 
 	// StateKey identifies where provider state is stored in the session.
-	// When empty, SourceID is used.
+	// When empty, an explicitly configured SourceID is used; otherwise the concrete
+	// strategy's unqualified type name is used (without a pointer prefix). Unnamed strategy types
+	// use their type's string representation. Set distinct keys to isolate providers
+	// whose defaults would match, including multiple instances of the same strategy type.
+	// To reuse state saved under the former default, set this to "CompactionProvider".
 	StateKey string
 
 	// TokenCounter computes token counts for message groups.
@@ -60,8 +65,15 @@ func NewContextProvider(cfg ContextProviderConfig) agent.ContextProvider {
 	if cfg.Strategy == nil {
 		panic("Strategy is required")
 	}
-	cfg.SourceID = cmp.Or(cfg.SourceID, defaultProviderSourceID)
 	cfg.StateKey = cmp.Or(cfg.StateKey, cfg.SourceID)
+	if cfg.StateKey == "" {
+		strategyType := reflect.TypeOf(cfg.Strategy)
+		if strategyType.Kind() == reflect.Pointer {
+			strategyType = strategyType.Elem()
+		}
+		cfg.StateKey = cmp.Or(strategyType.Name(), strategyType.String())
+	}
+	cfg.SourceID = cmp.Or(cfg.SourceID, defaultProviderSourceID)
 	if strings.TrimSpace(cfg.StateKey) == "" {
 		panic("StateKey must not be blank")
 	}

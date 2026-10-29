@@ -757,6 +757,136 @@ func TestNewContextProvider_PanicsWithBlankStateKey(t *testing.T) {
 	}
 }
 
+func TestNewProvider_DefaultStateIsIsolatedByStrategyType(t *testing.T) {
+	session := agenttest.CreateSession()
+	truncation := compaction.NewContextProvider(compaction.ContextProviderConfig{
+		Strategy: &compaction.TruncationStrategy{
+			Trigger: compaction.GroupsExceed(2), MinimumPreservedGroups: new(2),
+		},
+	})
+	result, _, err := invokeProvider(truncation, t.Context(), turnMessages(3), agent.WithSession(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := messageTexts(result), []string{"u3", "a3"}; !slices.Equal(got, want) {
+		t.Fatalf("initial truncation = %v, want %v", got, want)
+	}
+
+	for _, restored := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restored=%t", restored), func(t *testing.T) {
+			if restored {
+				data, err := json.Marshal(session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session = agenttest.CreateSession()
+				if err := json.Unmarshal(data, session); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A different strategy must not inherit truncation's exclusions.
+			window := compaction.NewContextProvider(compaction.ContextProviderConfig{
+				Strategy: &compaction.SlidingWindowStrategy{Trigger: compaction.Never()},
+			})
+			result, _, err := invokeProvider(window, t.Context(), turnMessages(3), agent.WithSession(session))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := messageTexts(result), messageTexts(turnMessages(3)); !slices.Equal(got, want) {
+				t.Errorf("different strategy inherited exclusions: got %v, want %v", got, want)
+			}
+
+			// Recreating the original strategy type must recover its saved state,
+			// even when its new configuration would not trigger compaction.
+			recreated := compaction.NewContextProvider(compaction.ContextProviderConfig{
+				Strategy: &compaction.TruncationStrategy{Trigger: compaction.Never()},
+			})
+			result, _, err = invokeProvider(recreated, t.Context(), turnMessages(3), agent.WithSession(session))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := messageTexts(result), []string{"u3", "a3"}; !slices.Equal(got, want) {
+				t.Errorf("recreated strategy lost exclusions: got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewProvider_CustomStrategyStateSurvivesRecreation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wrap func(strategyFunc) compaction.Strategy
+	}{
+		{"function value", func(f strategyFunc) compaction.Strategy { return f }},
+		{"function pointer", func(f strategyFunc) compaction.Strategy { return &f }},
+		{"unnamed struct", func(f strategyFunc) compaction.Strategy {
+			return struct{ compaction.Strategy }{f}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := agenttest.CreateSession()
+			truncation := &compaction.TruncationStrategy{
+				Trigger: compaction.GroupsExceed(2), MinimumPreservedGroups: new(2),
+			}
+			provider := compaction.NewContextProvider(compaction.ContextProviderConfig{Strategy: tc.wrap(truncation.Compact)})
+			if _, _, err := invokeProvider(provider, t.Context(), turnMessages(3), agent.WithSession(session)); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored := agenttest.CreateSession()
+			if err := json.Unmarshal(data, restored); err != nil {
+				t.Fatal(err)
+			}
+			provider = compaction.NewContextProvider(compaction.ContextProviderConfig{
+				Strategy: tc.wrap(func(context.Context, *compaction.MessageIndex) (bool, error) { return false, nil }),
+			})
+			result, _, err := invokeProvider(provider, t.Context(), turnMessages(3), agent.WithSession(restored))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := messageTexts(result), []string{"u3", "a3"}; !slices.Equal(got, want) {
+				t.Fatalf("recreated custom strategy lost exclusions: got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewProvider_ExplicitStateKeyRetainsLegacyState(t *testing.T) {
+	session := agenttest.CreateSession()
+	// SourceID still selects the same storage key as the previous default.
+	legacy := compaction.NewContextProvider(compaction.ContextProviderConfig{
+		SourceID: "CompactionProvider",
+		Strategy: &compaction.TruncationStrategy{
+			Trigger: compaction.GroupsExceed(2), MinimumPreservedGroups: new(2),
+		},
+	})
+	if _, _, err := invokeProvider(legacy, t.Context(), turnMessages(3), agent.WithSession(session)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := agenttest.CreateSession()
+	if err := json.Unmarshal(data, restored); err != nil {
+		t.Fatal(err)
+	}
+	provider := compaction.NewContextProvider(compaction.ContextProviderConfig{
+		StateKey: "CompactionProvider", SourceID: "new-attribution",
+		Strategy: &compaction.TruncationStrategy{Trigger: compaction.Never()},
+	})
+	result, _, err := invokeProvider(provider, t.Context(), turnMessages(3), agent.WithSession(restored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := messageTexts(result), []string{"u3", "a3"}; !slices.Equal(got, want) {
+		t.Fatalf("legacy state was not retained: got %v, want %v", got, want)
+	}
+}
+
 func TestNewProvider_CompactsAndPersistsIndex(t *testing.T) {
 	session := agenttest.CreateSession()
 	provider := compaction.NewContextProvider(compaction.ContextProviderConfig{
